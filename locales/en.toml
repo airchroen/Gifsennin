@@ -1,0 +1,158 @@
+# NOTE: no _version field — rust-i18n v1 format = one locale per file (from
+# file stem), nested tables flatten to dotted keys ([sidebar] file_info →
+# sidebar.file_info).
+
+[common]
+app_name = "GIFSennin"
+loading = "Loading…"
+exporting = "Exporting…"
+cancel = "Cancel"
+confirm = "Confirm"
+apply = "Apply"
+close = "Close"
+
+[error]
+io = "File I/O error"
+unsupported = "Unsupported format: {0}"
+decode = "Decode failed"
+encode = "Encode failed"
+too_large = "File too large: needs {0}, memory budget is {1}"
+other = "An error occurred"
+
+# ── Edit command labels (Edit variants → toolbar/context menu) ──
+[edit]
+delete = "Delete Selected"
+reverse = "Reverse Selected"
+reorder = "Move Frame"
+duration = "Set Duration"
+loop = "Set Loop"
+crop = "Crop"
+resize = "Resize"
+rotl = "Rotate Left"
+rotr = "Rotate Right"
+fliph = "Flip Horizontal"
+flipv = "Flip Vertical"
+
+# ── Status bar events (StatusEvent translation) ────────────────
+[status]
+ready = "Ready"
+loading = "Loading…"
+exporting = "Exporting…"
+dialog_cancelled = "Cancelled"
+cleared = "Cleared"
+loaded = "Loaded: {frames} frame(s), {file_bytes}, memory {mem_bytes}"
+export_done = "Exported {path} ({bytes}, {ms} ms)"
+error = "Error"
+
+# ── Right properties sidebar ────────────────────────────────────
+[sidebar]
+file_info = "File Info"
+file_name = "File"
+file_size = "File Size"
+canvas = "Canvas"
+frame_count = "Frames"
+loop_mode = "Loop"
+loop_infinite = "Loop infinitely"
+selection = "Selected Frames"
+selected_count = "{n} frame(s) selected"
+duration = "Duration (ms)"
+duration_mixed = "Mixed"
+apply_all = "Apply to all frames"
+apply = "Apply"
+memory = "Memory"
+mem_frames = "Frame data"
+mem_thumbs = "Thumbnail textures"
+mem_budget = "Memory budget"
+
+# ── Crop mode ───────────────────────────────────────────────────
+[crop]
+hint = "Crop mode: drag on the image to select, drag corners to adjust"
+selection_size = "Selection {w}×{h}"
+confirm = "Apply Crop"
+cancel = "Cancel"
+position = "Position"
+size = "Size"
+x = "X"
+y = "Y"
+w = "W"
+h = "H"
+
+# ── Export dialog ───────────────────────────────────────────────
+[export]
+title = "Export"
+tab_gif = "GIF"
+tab_webp = "WebP Animation"
+tab_png = "PNG Sequence"
+gif_quality_high = "High"
+gif_quality_balanced = "Balanced"
+gif_quality_fast = "Fast"
+webp_quality = "Quality"
+webp_lossless = "Lossless"
+png_hint = "Exports a zip archive; frames are named frame_0001.png onward."
+estimate_pending = "Estimating…"
+estimate_modified = "Changed, re-estimating…"
+estimate_failed = "Estimation failed"
+estimate_size = "~ {size}"
+start = "Export"
+cancel = "Cancel"
+
+# ── Resize dialog ───────────────────────────────────────────────
+[resize]
+title = "Resize"
+width = "Width"
+height = "Height"
+lock_aspect = "Lock aspect ratio"
+filter = "Filter"
+filter_catmull = "Smooth (CatmullRom)"
+filter_nearest = "Pixelated (Nearest)"
+filter_triangle = "Fast (Triangle)"
+filter_lanczos = "High quality (Lanczos3)"
+apply = "Apply"
+cancel = "Cancel"
+
+# ── Clear confirmation ──────────────────────────────────────────
+[confirm]
+title = "Confirm Clear"
+body = "You have unsaved edits. Clearing discards all changes. Clear anyway?"
+clear = "Clear"
+body_open = "You have unsaved edits. Opening a new file discards them. Continue?"
+cancel = "Cancel"
+
+# ── Toolbar ─────────────────────────────────────────────────────
+[toolbar]
+open = "Open"
+clear = "Clear"
+body_open = "You have unsaved edits. Opening a new file discards them. Continue?"
+export = "Export…"
+undo = "Undo"
+redo = "Redo"
+crop = "Crop…"
+resize = "Resize…"
+more = "More"
+select_all = "Select All (Ctrl+A)"
+lang = "语言 / Language"
+
+# ── Central preview ─────────────────────────────────────────────
+[preview]
+title = "Preview"
+counter = "Frame {i} / {n}"
+playhead = "Playhead (frame shown in preview)"
+step_back = "Step Back"
+step_forward = "Step Forward"
+play = "Play"
+pause = "Pause"
+duration = "{ms} ms"
+playing = "Playing"
+empty_open = "No file opened"
+empty_open_hint = "Use Open in the toolbar to pick a GIF / WebP / image"
+empty_doc = "Document has no frames"
+empty_doc_hint = "All frames deleted — undo to restore"
+
+# ── Frame list ──────────────────────────────────────────────────
+[thumbs]
+title = "Frames"
+count = "{n} frame(s)"
+empty = "Open a file to list its frames here"
+empty_doc = "No frames (undo to restore)"
+move_up = "Move Up"
+move_down = "Move Down"

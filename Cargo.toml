@@ -1,0 +1,42 @@
+[package]
+name = "gifsennin-rust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# UI framework - Use eframe which handles all the OpenGL complexity
+eframe = { version = "0.28", default-features = true }
+
+# Image processing
+image = { version = "0.25", features = ["gif", "webp"] }
+gif = "0.13"
+webp = "0.3"
+
+# Archive for PNG sequence export
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# File handling
+rfd = "0.14"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Error handling
+thiserror = "1.0"
+
+# i18n (共识 Q9: 双语, 默认中文)
+rust-i18n = "3"
+
+# Utilities
+chrono = "0.4"
+
+# Performance optimization
+rayon = "1.8"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

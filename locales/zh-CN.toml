@@ -1,0 +1,157 @@
+# 注意：不写 _version —— rust-i18n v1 格式 = 每文件一个 locale（取文件名），
+# 嵌套表自动展平为点分键（[sidebar] file_info → sidebar.file_info）。
+
+[common]
+app_name = "GIFSennin"
+loading = "加载中…"
+exporting = "导出中…"
+cancel = "取消"
+confirm = "确认"
+apply = "应用"
+close = "关闭"
+
+[error]
+io = "读写文件失败"
+unsupported = "不支持的格式：{0}"
+decode = "解码失败"
+encode = "编码失败"
+too_large = "文件过大：需要 {0}，超出内存预算 {1}"
+other = "发生错误"
+
+# ── 编辑命令标签（Edit 变体 → 工具栏/右键菜单） ──────────────────
+[edit]
+delete = "删除所选帧"
+reverse = "反转所选"
+reorder = "移动帧"
+duration = "设置时长"
+loop = "循环设置"
+crop = "裁剪"
+resize = "缩放"
+rotl = "左旋"
+rotr = "右旋"
+fliph = "水平翻转"
+flipv = "垂直翻转"
+
+# ── 状态栏事件（StatusEvent 翻译） ───────────────────────────────
+[status]
+ready = "就绪"
+loading = "加载中…"
+exporting = "导出中…"
+dialog_cancelled = "已取消"
+cleared = "已清空"
+loaded = "已加载：{frames} 帧，{file_bytes}，内存 {mem_bytes}"
+export_done = "已导出 {path}（{bytes}，{ms} ms）"
+error = "错误"
+
+# ── 右侧属性栏 ──────────────────────────────────────────────────
+[sidebar]
+file_info = "文件信息"
+file_name = "文件名"
+file_size = "文件大小"
+canvas = "画布"
+frame_count = "帧数"
+loop_mode = "循环"
+loop_infinite = "无限循环"
+selection = "所选帧"
+selected_count = "已选 {n} 帧"
+duration = "时长 (ms)"
+duration_mixed = "多种"
+apply_all = "应用到所有帧"
+apply = "应用"
+memory = "内存"
+mem_frames = "帧数据"
+mem_thumbs = "缩略图纹理"
+mem_budget = "内存预算"
+
+# ── 裁剪模式 ────────────────────────────────────────────────────
+[crop]
+hint = "裁剪模式：在图上拖拽框选，拖动四角调整"
+selection_size = "选区 {w}×{h}"
+confirm = "确认裁剪"
+cancel = "取消"
+position = "位置"
+size = "大小"
+x = "X"
+y = "Y"
+w = "W"
+h = "H"
+
+# ── 导出对话框 ──────────────────────────────────────────────────
+[export]
+title = "导出"
+tab_gif = "GIF"
+tab_webp = "WebP动画"
+tab_png = "PNG序列"
+gif_quality_high = "高"
+gif_quality_balanced = "平衡"
+gif_quality_fast = "快"
+webp_quality = "质量"
+webp_lossless = "无损"
+png_hint = "将导出为 zip 压缩包，帧文件从 frame_0001.png 起。"
+estimate_pending = "估算中…"
+estimate_modified = "已修改，重新估算中…"
+estimate_failed = "估算失败"
+estimate_size = "约 {size}"
+start = "导出"
+cancel = "取消"
+
+# ── 缩放对话框 ──────────────────────────────────────────────────
+[resize]
+title = "缩放"
+width = "宽度"
+height = "高度"
+lock_aspect = "锁定宽高比"
+filter = "滤镜"
+filter_catmull = "平滑（CatmullRom）"
+filter_nearest = "像素风（Nearest）"
+filter_triangle = "快速（Triangle）"
+filter_lanczos = "高质量（Lanczos3）"
+apply = "应用"
+cancel = "取消"
+
+# ── 清空确认 ────────────────────────────────────────────────────
+[confirm]
+title = "清空确认"
+body = "有未撤销的编辑，清空将丢弃所有更改。确定清空？"
+clear = "清空"
+body_open = "有未撤销的编辑，打开新文件将丢弃所有更改。继续？"
+cancel = "取消"
+
+# ── 工具栏 ──────────────────────────────────────────────────────
+[toolbar]
+open = "打开"
+clear = "清空"
+body_open = "有未撤销的编辑，打开新文件将丢弃所有更改。继续？"
+export = "导出…"
+undo = "撤销"
+redo = "重做"
+crop = "裁剪…"
+resize = "缩放…"
+more = "更多"
+select_all = "全选 (Ctrl+A)"
+lang = "语言 / Language"
+
+# ── 中央预览 ────────────────────────────────────────────────────
+[preview]
+title = "预览"
+counter = "第 {i} / {n} 帧"
+playhead = "播放头（预览中显示的帧）"
+step_back = "上一帧"
+step_forward = "下一帧"
+play = "播放"
+pause = "暂停"
+duration = "{ms} ms"
+playing = "播放中"
+empty_open = "尚未打开文件"
+empty_open_hint = "点击工具栏「打开」选择 GIF / WebP / 图片"
+empty_doc = "文档没有帧"
+empty_doc_hint = "所有帧已删除，可撤销恢复"
+
+# ── 帧列表 ──────────────────────────────────────────────────────
+[thumbs]
+title = "帧列表"
+count = "{n} 帧"
+empty = "打开文件后此处显示帧列表"
+empty_doc = "没有帧（可撤销恢复）"
+move_up = "上移一格"
+move_down = "下移一格"
