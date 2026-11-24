@@ -2,7 +2,7 @@ use super::actions::Edit;
 use super::frame::FrameId;
 use std::collections::HashSet;
 
-/// 文档结构快照（共识 Q3）。帧像素数据不在快照内——
+/// 文档结构快照。帧像素数据不在快照内——
 /// 它们由 FrameStore 以 `Arc` 结构共享，快照只携带廉价的骨架数据
 /// （300 帧 ≈ 2.4KB），因此快照式 undo 永远正确且近乎免费。
 #[derive(Debug, Clone, PartialEq)]
@@ -59,17 +59,11 @@ impl History {
     /// 应用编辑前调用：压入编辑前快照，清空 redo（新编辑使重做分支失效）
     pub fn push_undo(&mut self, edit: Edit, before: Snapshot) {
         self.redo.clear();
-        self.undo.push(HistoryEntry {
-            edit,
-            state: before,
-        });
-        if self.undo.len() > MAX_HISTORY {
-            self.undo.remove(0);
-        }
+        self.push_undo_keep_redo(edit, before);
     }
 
-    /// Redo 路径专用：压入撤销栈但**保留**剩余 redo 分支。
-    /// （审查修复：Redo 复用 push_undo 会把 redo 清空，深度恒截断为 1。）
+    /// Redo 路径专用：压入撤销栈但**保留**剩余 redo 分支
+    /// （走 `push_undo` 会清空 redo，重做深度被截断为 1）。
     pub fn push_undo_keep_redo(&mut self, edit: Edit, before: Snapshot) {
         self.undo.push(HistoryEntry {
             edit,
@@ -101,10 +95,11 @@ impl History {
     }
 
     /// 当前序列 + 全部历史快照引用的帧 id 集合（GC 依据）
-    pub fn referenced_ids<'a>(&'a self, current: &'a [FrameId], out: &'a mut HashSet<FrameId>) {
-        out.extend(current.iter().copied());
+    pub fn referenced_ids(&self, current: &[FrameId]) -> HashSet<FrameId> {
+        let mut ids: HashSet<FrameId> = current.iter().copied().collect();
         for entry in self.undo.iter().chain(self.redo.iter()) {
-            out.extend(entry.state.order.iter().copied());
+            ids.extend(entry.state.order.iter().copied());
         }
+        ids
     }
 }

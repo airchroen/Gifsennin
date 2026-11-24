@@ -1,13 +1,10 @@
-use super::frame::FrameId;
+use super::frame::{Frame, FrameId};
 use super::transform::ResizeFilter;
 use crate::errors::AppError;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::frame::Frame;
-
-/// 可撤销的编辑命令（共识 Q3）。enum + match 穷尽分发——
-/// 新增命令漏处理时编译器直接报错。
+/// 可撤销的编辑命令。新增命令时由编译器保证 `apply_edit` 穷尽处理。
 #[derive(Debug, Clone)]
 pub enum Edit {
     /// 删除指定帧（像素数据留在仓库供 undo）
@@ -26,8 +23,7 @@ pub enum Edit {
         ids: Vec<FrameId>,
         ms: u32,
     },
-    /// 循环模式（true = 无限循环）。可撤销的文档属性
-    /// （审查修复：原先在历史外直接改，会被无关撤销静默回滚）
+    /// 循环模式（true = 无限循环）；走编辑历史，避免被无关的撤销静默回滚
     SetLoop {
         infinite: bool,
     },
@@ -50,7 +46,7 @@ pub enum Edit {
     FlipV,
 }
 
-/// GIF 编码质量三档（共识 Q8）：内部映射 NeuQuant speed 参数
+/// GIF 编码质量三档（映射为 NeuQuant 的 speed 参数）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GifQuality {
     High,
@@ -58,7 +54,7 @@ pub enum GifQuality {
     Fast,
 }
 
-/// 导出格式与参数（共识 Q8）
+/// 导出格式与参数
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExportFormat {
     Gif { quality: GifQuality },
@@ -85,19 +81,19 @@ pub struct ExportOutcome {
     pub ms: u64,
 }
 
-/// 体积估算状态（共识 Q8-c：worker 试编码 + 防抖，过期代次结果丢弃）
+/// 体积估算状态：worker 试编码，按代次丢弃过期结果
 #[derive(Debug, Default)]
 pub struct EstimateState {
     /// 单调递增代次；EstimateReady 携带的代次落后于当前即丢弃。
     /// 代次跨文档保持单调（文档切换时保留计数，见 Model::apply）
     pub generation: u64,
     /// 是否有估算 worker 在途（单飞：在途时不再派发新估算，
-    /// 结果落地后对话框按需重发——审查修复线程堆积）
+    /// 避免拖动滑条时线程堆积）
     pub in_flight: bool,
     pub result: Option<Result<u64, AppError>>,
 }
 
-/// UI → 模型的唯一入口（共识 Q5 Action-MVU）。
+/// UI → 模型的唯一入口（Action-MVU）。
 /// 渲染函数只产出 Action，`Model::apply` 穷尽处理并返回需执行的副作用。
 /// 不 derive Debug/Clone：负载含 Project（移动语义，跨线程单次投递）。
 pub enum Action {

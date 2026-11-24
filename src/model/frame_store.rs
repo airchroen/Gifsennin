@@ -3,11 +3,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-/// 帧身份全局单调计数器（审查修复：原为每仓库从 0 起算，跨文档 FrameId
-/// 碰撞会让纹理缓存/拖拽状态命中前一文档的残留——身份必须进程内唯一）。
+/// 帧身份进程内唯一（全局单调计数）：若按仓库各自从 0 起算，跨文档的 FrameId
+/// 会碰撞，纹理缓存/拖拽状态将命中前一文档的残留。
 static NEXT_FRAME_ID: AtomicU64 = AtomicU64::new(0);
 
-/// 帧仓库（共识 Q3）：只增不删的权威存储；「删除帧」只是从 `order` 移除，
+/// 帧仓库：只增不删的权威存储；「删除帧」只是从 `order` 移除，
 /// 像素数据保留在仓库中供 undo 恢复。每次编辑后由 `gc()` 清理
 /// 既不在当前序列、也不被任何历史快照引用的帧。
 #[derive(Debug, Default)]

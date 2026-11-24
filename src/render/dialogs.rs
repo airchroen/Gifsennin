@@ -1,15 +1,15 @@
-// 模态对话框集合：导出 / 缩放 / 清空确认。
-// 纯视图：只读 Model，直接修改 UiState 瞬态字段（开合、页签、防抖标记），
-// 用户意图一律以 Action 返回，由 app 层统一分发。
+//! 模态对话框集合：导出 / 缩放 / 清空确认。
+//! 纯视图：只读 Model，直接修改 UiState 瞬态字段（开合、页签、防抖标记），
+//! 用户意图一律以 Action 返回，由 app 层统一分发。
 
-use super::toolbar::fmt_bytes;
+use super::fmt_bytes;
 use crate::model::{Action, Edit, GifQuality, Model, ResizeFilter};
 use crate::render::i18n::{tr, tra};
-use crate::render::{theme, UiState};
+use crate::render::{theme, ExportTab, UiState};
 use eframe::egui::{self, Context};
 use std::time::{Duration, Instant};
 
-/// 估算防抖窗口：参数停止变化 ≥300ms 才发起新估算（共识 Q8-c）
+/// 估算防抖窗口：参数停止变化 ≥300ms 才发起新估算
 const ESTIMATE_DEBOUNCE: Duration = Duration::from_millis(300);
 
 pub fn render_dialogs(ctx: &Context, model: &Model, ui_state: &mut UiState) -> Vec<Action> {
@@ -42,15 +42,27 @@ fn export_dialog(ctx: &Context, model: &Model, ui_state: &mut UiState) -> Vec<Ac
         .show(ctx, |ui| {
             // 页签：GIF / WebP动画 / PNG序列
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut ui_state.export_tab, 0, tr("export.tab_gif"));
-                ui.selectable_value(&mut ui_state.export_tab, 1, tr("export.tab_webp"));
-                ui.selectable_value(&mut ui_state.export_tab, 2, tr("export.tab_png"));
+                ui.selectable_value(
+                    &mut ui_state.export_tab,
+                    ExportTab::Gif,
+                    tr("export.tab_gif"),
+                );
+                ui.selectable_value(
+                    &mut ui_state.export_tab,
+                    ExportTab::Webp,
+                    tr("export.tab_webp"),
+                );
+                ui.selectable_value(
+                    &mut ui_state.export_tab,
+                    ExportTab::PngZip,
+                    tr("export.tab_png"),
+                );
             });
             ui.separator();
 
             // 各页签参数
             match ui_state.export_tab {
-                0 => {
+                ExportTab::Gif => {
                     ui.radio_value(
                         &mut ui_state.gif_quality,
                         GifQuality::High,
@@ -67,7 +79,7 @@ fn export_dialog(ctx: &Context, model: &Model, ui_state: &mut UiState) -> Vec<Ac
                         tr("export.gif_quality_fast"),
                     );
                 }
-                1 => {
+                ExportTab::Webp => {
                     ui.horizontal(|ui| {
                         ui.label(tr("export.webp_quality"));
                         // 无损模式下质量滑条无意义，置灰
@@ -78,15 +90,13 @@ fn export_dialog(ctx: &Context, model: &Model, ui_state: &mut UiState) -> Vec<Ac
                     });
                     ui.checkbox(&mut ui_state.webp_lossless, tr("export.webp_lossless"));
                 }
-                _ => {
+                ExportTab::PngZip => {
                     ui.label(tr("export.png_hint"));
                 }
             }
             ui.separator();
 
             // ── 体积估算：真防抖（参数静默 ≥300ms 才发送）+ 单飞重估 ──
-            // 审查修复：原先以「上次发送时刻」为基准 → 拖动滑条期间每
-            // 300ms 泛滥触发试编码线程；现以「最近变更时刻」为基准。
             let current = ui_state.current_export_format();
             let differs_from_sent = ui_state
                 .estimate_sent
@@ -135,9 +145,7 @@ fn export_dialog(ctx: &Context, model: &Model, ui_state: &mut UiState) -> Vec<Ac
             } else {
                 match &model.estimate.result {
                     None => tr("export.estimate_pending"),
-                    Some(Ok(bytes)) => {
-                        tra("export.estimate_size", &[("size", fmt_bytes(*bytes))])
-                    }
+                    Some(Ok(bytes)) => tra("export.estimate_size", &[("size", fmt_bytes(*bytes))]),
                     Some(Err(_)) => tr("export.estimate_failed"),
                 }
             };

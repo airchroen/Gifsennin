@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-/// 帧的稳定身份（共识 Q3）。newtype：零成本类型安全；
+/// 帧的稳定身份。newtype：零成本类型安全；
 /// 在重排/删除/undo 后仍保持不变，选中状态与纹理缓存都以它为 key。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FrameId(pub u64);
 
-/// 不可变帧（共识 Q3/Q4）：扁平 RGBA8 字节存储，零转换直通 GPU/编码器。
+/// 不可变帧：扁平 RGBA8 字节存储，零转换直通 GPU/编码器。
 /// `Arc` 结构共享使快照式 undo 几乎免费。
 #[derive(Debug)]
 pub struct Frame {
@@ -17,7 +17,7 @@ pub struct Frame {
 }
 
 impl Frame {
-    /// 校验缓冲区尺寸后构造帧。
+    /// 校验缓冲区尺寸后构造帧；尺寸不符返回 `None`。
     pub fn from_rgba(data: Vec<u8>, width: u32, height: u32, duration_ms: u32) -> Option<Self> {
         let expected = width as usize * height as usize * 4;
         if data.len() != expected {
@@ -33,11 +33,6 @@ impl Frame {
 
     pub fn as_rgba(&self) -> &[u8] {
         &self.data
-    }
-
-    /// codec 层零拷贝访问（Arc 克隆仅计指针）
-    pub fn arc_data(&self) -> Arc<Vec<u8>> {
-        Arc::clone(&self.data)
     }
 
     pub fn memory_size(&self) -> usize {

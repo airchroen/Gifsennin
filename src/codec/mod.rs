@@ -1,16 +1,19 @@
-// codec 层（共识 Q5）：编解码边界，纯函数。
-// 所有格式在入口处归一时基为「每帧时长 ms」（共识 Q1/Q6 附注）。
+//! codec 层：编解码边界，纯函数。
+//! 所有格式在入口处归一时间基为「每帧时长 ms」。
 
-pub mod gif_in;
-pub mod gif_out;
-pub mod png_seq;
-pub mod static_in;
-pub mod webp_in;
-pub mod webp_out;
+mod gif_in;
+mod gif_out;
+mod png_seq;
+mod static_in;
+mod webp_in;
+mod webp_out;
 
 use crate::errors::AppError;
-use crate::model::GifQuality;
+use crate::model::{ExportFormat, Frame};
+use rayon::prelude::*;
+use std::fmt;
 use std::path::Path;
+use std::sync::Arc;
 
 pub use gif_in::load_gif;
 pub use gif_out::encode_gif;
@@ -36,18 +39,6 @@ pub struct DecodedFrame {
     pub duration_ms: u32,
 }
 
-pub const SUPPORTED_EXTENSIONS: &[&str] = &["gif", "png", "jpg", "jpeg", "webp", "bmp"];
-
-pub fn is_supported(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| {
-            let e = e.to_lowercase();
-            SUPPORTED_EXTENSIONS.contains(&e.as_str())
-        })
-        .unwrap_or(false)
-}
-
 /// 按扩展名分派到具体解码器
 pub fn load_any(path: &Path) -> Result<DecodedAnimation, AppError> {
     let ext = path
@@ -63,11 +54,46 @@ pub fn load_any(path: &Path) -> Result<DecodedAnimation, AppError> {
     }
 }
 
-/// GIF 编码质量档位 → gif crate NeuQuant speed（1=最慢最好 … 30=最快最差）
-pub fn gif_speed_for(quality: GifQuality) -> i32 {
-    match quality {
-        GifQuality::High => 3,
-        GifQuality::Balanced => 10,
-        GifQuality::Fast => 22,
+/// 按导出格式编码为字节；导出落盘与体积估算共用这一入口。
+pub fn encode(
+    frames: &[Arc<Frame>],
+    loop_count: u16,
+    format: &ExportFormat,
+) -> Result<Vec<u8>, AppError> {
+    match format {
+        ExportFormat::Gif { quality } => gif_out::encode_gif(frames, loop_count, *quality),
+        ExportFormat::Webp { quality, lossless } => {
+            webp_out::encode_webp(frames, loop_count, *quality, *lossless)
+        }
+        ExportFormat::PngZip => png_seq::encode_png_zip(frames),
     }
+}
+
+/// 给解码错误补上路径上下文
+pub(super) fn decode_err(path: &Path, e: impl fmt::Display) -> AppError {
+    AppError::Decode(format!("{}: {e}", path.display()))
+}
+
+/// 帧级并行处理：帧间独立且 CPU 密集的编码步骤（GIF 量化 / PNG 压缩）交给 rayon。
+/// 按线程数分块，块内并行、块间按序交给 `sink`（块起始下标，该块的编码结果），
+/// 输出与逐帧串行处理一致；分块是为了限制中间缓冲的峰值内存。
+pub(super) fn par_chunks<T, U, E>(
+    items: &[T],
+    encode: impl Fn(&T) -> Result<U, E> + Sync,
+    mut sink: impl FnMut(usize, &[U]) -> Result<(), E>,
+) -> Result<(), E>
+where
+    T: Sync,
+    U: Send,
+    E: Send,
+{
+    let chunk_len = rayon::current_num_threads().max(1);
+    for (ci, chunk) in items.chunks(chunk_len).enumerate() {
+        let encoded = chunk
+            .par_iter()
+            .map(&encode)
+            .collect::<Result<Vec<_>, E>>()?;
+        sink(ci * chunk_len, &encoded)?;
+    }
+    Ok(())
 }

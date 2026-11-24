@@ -5,8 +5,7 @@
 //! 所有修改只作用于 `ui_state.crop` 草稿（立即模式）；确认才提交
 //! `Action::Edit(Edit::Crop)`，取消直接清空草稿。
 
-use crate::model::transform::clamp_crop;
-use crate::model::{Action, Edit, Model};
+use crate::model::{clamp_crop, Action, Edit, Model};
 use crate::render::i18n::{tr, tra};
 use crate::render::{theme, CropDraft, TextureCache, UiState};
 use eframe::egui::{
@@ -241,38 +240,23 @@ pub fn render_crop_overlay(
     );
 
     // 选区外四块暗遮罩（上 / 下 / 左 / 右）
-    painter.rect_filled(
-        Rect::from_min_max(
-            pos2(image_rect.left(), image_rect.top()),
-            pos2(image_rect.right(), sel_rect.top()),
-        ),
-        Rounding::ZERO,
-        MASK_COLOR,
+    let (l, t, r, b) = (
+        image_rect.left(),
+        image_rect.top(),
+        image_rect.right(),
+        image_rect.bottom(),
     );
-    painter.rect_filled(
+    for mask in [
+        Rect::from_min_max(pos2(l, t), pos2(r, sel_rect.top())),
+        Rect::from_min_max(pos2(l, sel_rect.bottom()), pos2(r, b)),
         Rect::from_min_max(
-            pos2(image_rect.left(), sel_rect.bottom()),
-            pos2(image_rect.right(), image_rect.bottom()),
-        ),
-        Rounding::ZERO,
-        MASK_COLOR,
-    );
-    painter.rect_filled(
-        Rect::from_min_max(
-            pos2(image_rect.left(), sel_rect.top()),
+            pos2(l, sel_rect.top()),
             pos2(sel_rect.left(), sel_rect.bottom()),
         ),
-        Rounding::ZERO,
-        MASK_COLOR,
-    );
-    painter.rect_filled(
-        Rect::from_min_max(
-            pos2(sel_rect.right(), sel_rect.top()),
-            pos2(image_rect.right(), sel_rect.bottom()),
-        ),
-        Rounding::ZERO,
-        MASK_COLOR,
-    );
+        Rect::from_min_max(pos2(sel_rect.right(), sel_rect.top()), pos2(r, b)),
+    ] {
+        painter.rect_filled(mask, Rounding::ZERO, MASK_COLOR);
+    }
 
     // 选区靛蓝边框 + 四角手柄圆点
     painter.rect_stroke(
@@ -319,9 +303,7 @@ pub fn render_crop_overlay(
             );
             numeric_changed = rx.changed() || ry.changed() || rw.changed() || rh.changed();
         });
-    }
-    if numeric_changed {
-        if let Some(d) = ui_state.crop.as_mut() {
+        if numeric_changed {
             let (x, y, w, h) = clamp_crop(canvas, d.x, d.y, d.w, d.h);
             *d = CropDraft { x, y, w, h };
         }

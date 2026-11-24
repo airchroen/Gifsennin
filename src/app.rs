@@ -1,25 +1,27 @@
-// app.rs：eframe 装配层（共识 Q5 Action-MVU）。
-// 拥有 Model + 纹理缓存 + UI 瞬态；每帧：tick 播放 → drain worker 通道 →
-// 快捷键 → 渲染面板收集 Action → 统一 apply + 执行 Effect → 安排重绘。
+//! app.rs：eframe 装配层（Action-MVU）。
+//! 拥有 Model + 纹理缓存 + UI 瞬态；每帧：tick 播放 → drain worker 通道 →
+//! 快捷键 → 渲染面板收集 Action → 统一 apply + 执行 Effect → 安排重绘。
 
 use crate::errors::AppError;
-use crate::model::{Action, Edit, Model};
+use crate::model::{Action, Edit, Model, Project};
 use crate::render::{self, fonts, theme, TextureCache, UiState};
 use crate::workers::{self, Workers};
 use eframe::{egui, App};
 use egui::Context;
+use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
-pub struct GifSenninApp {
+struct GifSenninApp {
     model: Model,
     workers: Workers,
     rx: Receiver<Action>,
     textures: TextureCache,
     ui: UiState,
-    last_time: f64,
-    /// 启动文件参数（`gifsennin <file>`）：首帧投递一次
-    startup_file: Option<std::path::PathBuf>,
+    /// 上一帧的 egui 时间戳；首帧前为 `None`（此时 dt 取 0）
+    last_time: Option<f64>,
+    /// 启动文件参数（`gifsennin <file>`）
+    startup_file: Option<PathBuf>,
 }
 
 pub fn run() -> Result<(), AppError> {
@@ -29,7 +31,7 @@ pub fn run() -> Result<(), AppError> {
         .init();
     log::info!("=== GIFSennin v1 starting ===");
 
-    rust_i18n::set_locale("zh-CN"); // 默认中文（共识 Q9）
+    rust_i18n::set_locale("zh-CN"); // 默认中文
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -39,8 +41,8 @@ pub fn run() -> Result<(), AppError> {
         ..Default::default()
     };
 
-    // `gifsennin <file>`：直接打开指定文件（不存在的路径走正常加载失败提示）
-    let start_file = std::env::args().nth(1).map(std::path::PathBuf::from);
+    // 命令行首参作为启动文件；路径不存在时走正常的加载失败提示
+    let start_file = std::env::args().nth(1).map(PathBuf::from);
 
     eframe::run_native(
         "GIFSennin",
@@ -54,7 +56,7 @@ pub fn run() -> Result<(), AppError> {
 }
 
 impl GifSenninApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, startup_file: Option<std::path::PathBuf>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, startup_file: Option<PathBuf>) -> Self {
         fonts::install(&cc.egui_ctx);
         theme::apply(&cc.egui_ctx);
         let (workers, rx) = workers::channel();
@@ -64,7 +66,7 @@ impl GifSenninApp {
             rx,
             textures: TextureCache::new(),
             ui: UiState::new(),
-            last_time: 0.0,
+            last_time: None,
             startup_file,
         }
     }
@@ -81,7 +83,7 @@ impl GifSenninApp {
                 }
                 Action::ClearConfirmed
             }
-            // 打开新文件同样丢弃未导出的编辑（审查修复：原先静默丢弃）
+            // 打开新文件同样会丢弃未导出的编辑，需要确认
             Action::FilePicked(Some(path)) if self.model.dirty() => {
                 self.ui.confirm_clear = true;
                 self.ui.pending_open = Some(path);
@@ -95,16 +97,10 @@ impl GifSenninApp {
         );
         let effects = self.model.apply(action);
         for e in effects {
-            self.workers.exec(e, &self.model);
+            self.workers.exec(e);
         }
         if doc_switch {
-            // 文档切换：释放旧纹理、调整缩略图容量、关闭悬挂的对话框草稿
-            let frame_cap = self
-                .model
-                .project
-                .as_ref()
-                .map(|p| p.frame_count())
-                .unwrap_or(0);
+            let frame_cap = self.model.project.as_ref().map_or(0, Project::frame_count);
             self.textures.clear();
             self.textures.set_cap(400.max(frame_cap) + 64);
             self.ui.export_open = false;
@@ -123,17 +119,11 @@ impl GifSenninApp {
         }
     }
 
-    /// 全局快捷键（共识 Q7/Q8）。文本输入聚焦时让路。
+    /// 全局快捷键。文本输入聚焦时让路。
     fn shortcuts(&mut self, ctx: &Context) {
         if ctx.wants_keyboard_input() {
             return;
         }
-        let selection: Vec<_> = self
-            .model
-            .project
-            .as_ref()
-            .map(|p| p.selection_in_order())
-            .unwrap_or_default();
         let mut actions = Vec::new();
         ctx.input(|i| {
             let ctrl = i.modifiers.ctrl;
@@ -145,10 +135,16 @@ impl GifSenninApp {
             {
                 actions.push(Action::Redo);
             }
-            if i.key_pressed(egui::Key::Delete) && !selection.is_empty() {
-                actions.push(Action::Edit(Edit::DeleteFrames {
-                    ids: selection.clone(),
-                }));
+            if i.key_pressed(egui::Key::Delete) {
+                let ids: Vec<_> = self
+                    .model
+                    .project
+                    .as_ref()
+                    .map(Project::selection_in_order)
+                    .unwrap_or_default();
+                if !ids.is_empty() {
+                    actions.push(Action::Edit(Edit::DeleteFrames { ids }));
+                }
             }
             if ctrl && i.key_pressed(egui::Key::A) {
                 actions.push(Action::SelectAll);
@@ -156,7 +152,7 @@ impl GifSenninApp {
             if i.key_pressed(egui::Key::Space) {
                 actions.push(Action::PlayPause);
             }
-            // 步进（预览按钮 tooltip 承诺的 ←/→，审查修复补齐绑定）
+            // ←/→ 步进：预览按钮的 tooltip 承诺了这两个快捷键
             if i.key_pressed(egui::Key::ArrowLeft) {
                 actions.push(Action::StepBack);
             }
@@ -172,29 +168,22 @@ impl GifSenninApp {
 
 impl App for GifSenninApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
-        // 0. 启动文件参数：首帧投递一次（新鲜文档不触发脏确认弹窗）
+        // 启动文件参数：首帧投递一次（新鲜文档不触发脏确认弹窗）
         if let Some(path) = self.startup_file.take() {
             self.dispatch(Action::FilePicked(Some(path)), ctx);
         }
 
-        // 1. 时间推进与播放 tick
         let now = ctx.input(|i| i.time);
-        let dt = if self.last_time == 0.0 {
-            0.0
-        } else {
-            now - self.last_time
-        };
-        self.last_time = now;
+        let dt = self.last_time.map_or(0.0, |t| now - t);
+        self.last_time = Some(now);
         self.model.tick_playback(dt);
 
-        // 2. worker 结果回流
         self.drain_workers(ctx);
 
-        // 3. 快捷键
         self.shortcuts(ctx);
 
-        // 4. 渲染面板（纯视图，收集 Action）
-        //    借用拆分：model 只读给视图，textures/ui 可变。
+        // 渲染面板（纯视图，收集 Action）。
+        // 借用拆分：model 只读给视图，textures/ui 可变。
         let mut actions = Vec::new();
         {
             let model = &self.model;
@@ -215,7 +204,7 @@ impl App for GifSenninApp {
                 .show(ctx, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         actions.extend(render::thumbnails::render_thumbnails(
-                            ui, ctx, model, textures, ui_state,
+                            ui, ctx, model, textures,
                         ));
                     });
                 });
@@ -226,9 +215,7 @@ impl App for GifSenninApp {
                 .exact_width(300.0)
                 .show(ctx, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        actions.extend(render::sidebar::render_sidebar(
-                            ui, ctx, model, textures, ui_state,
-                        ));
+                        actions.extend(render::sidebar::render_sidebar(ui, model, textures));
                     });
                 });
 
@@ -240,16 +227,14 @@ impl App for GifSenninApp {
                     ));
                 });
 
-            // 模态对话框（导出/缩放/清空确认）
             actions.extend(render::dialogs::render_dialogs(ctx, model, ui_state));
         }
 
-        // 5. 统一分发
         for a in actions {
             self.dispatch(a, ctx);
         }
 
-        // 6. 重绘调度：播放中按当前帧剩余时长请求；后台任务挂起时持续轮询。
+        // 重绘调度：播放中按当前帧剩余时长请求；后台任务挂起时持续轮询。
         if let Some(remaining_ms) = self.model.playback_remaining_ms() {
             ctx.request_repaint_after(Duration::from_millis(remaining_ms as u64 + 2));
         }
@@ -257,7 +242,7 @@ impl App for GifSenninApp {
             ctx.request_repaint();
         }
         // 估算在途也要轮询：mpsc 无唤醒，不请求重绘的话结果落地后
-        // 界面会停在「估算中…」直到下一次输入（审查修复重绘饥饿）
+        // 界面会停在「估算中…」直到下一次输入
         if self.model.estimate.in_flight {
             ctx.request_repaint_after(Duration::from_millis(50));
         }

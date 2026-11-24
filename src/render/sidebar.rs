@@ -4,27 +4,21 @@
 //! 时长输入框、应用到全部等瞬态存 egui memory（不进 UiState/Model，
 //! 关闭文档或切换选中集时按签名重置）。
 
+use super::fmt_bytes;
 use super::i18n::{tr, tra};
-use super::toolbar::fmt_bytes;
-use crate::model::{Action, Edit, FrameId, Model, MEMORY_BUDGET_BYTES};
-use crate::render::{theme, TextureCache, UiState};
-use eframe::egui::{self, Context, Id, Ui};
+use crate::model::{Action, Edit, FrameId, Model, Project, MEMORY_BUDGET_BYTES};
+use crate::render::{theme, TextureCache};
+use eframe::egui::{self, Id, Ui};
 use std::path::PathBuf;
 
 // egui memory 键（跨帧瞬态）
 const KEY_DUR_SIG: &str = "sidebar.duration_sel_sig";
 const KEY_DURATION_MS: &str = "sidebar.duration_ms";
 const KEY_APPLY_ALL: &str = "sidebar.apply_all";
-/// 混合时长时输入框的初始值（规格指定 100ms）
+/// 混合时长时输入框的初始值（ms）
 const DEFAULT_DURATION_MS: u32 = 100;
 
-pub fn render_sidebar(
-    ui: &mut Ui,
-    _ctx: &Context,
-    model: &Model,
-    textures: &mut TextureCache,
-    _ui_state: &mut UiState,
-) -> Vec<Action> {
+pub fn render_sidebar(ui: &mut Ui, model: &Model, textures: &TextureCache) -> Vec<Action> {
     let Some(p) = model.project.as_ref() else {
         return Vec::new();
     };
@@ -41,7 +35,7 @@ pub fn render_sidebar(
 
 // ── 文件信息 ────────────────────────────────────────────────────
 
-fn render_file_info(ui: &mut Ui, p: &crate::model::Project, actions: &mut Vec<Action>) {
+fn render_file_info(ui: &mut Ui, p: &Project, actions: &mut Vec<Action>) {
     egui::CollapsingHeader::new(theme::heading(tr("sidebar.file_info")))
         .default_open(true)
         .show(ui, |ui| {
@@ -59,8 +53,6 @@ fn render_file_info(ui: &mut Ui, p: &crate::model::Project, actions: &mut Vec<Ac
                     ui.add(egui::Label::new(name).wrap());
                     ui.end_row();
 
-                    // 文件大小：加载时读一次缓存于 Project（审查修复：
-                    // 原先每帧 fs::metadata，网络路径会阻塞渲染线程）
                     ui.weak(tr("sidebar.file_size"));
                     let size = if p.file_size > 0 {
                         fmt_bytes(p.file_size)
@@ -97,18 +89,18 @@ fn render_file_info(ui: &mut Ui, p: &crate::model::Project, actions: &mut Vec<Ac
 
 // ── 所选帧 ──────────────────────────────────────────────────────
 
-fn render_selection(ui: &mut Ui, p: &crate::model::Project, actions: &mut Vec<Action>) {
+fn render_selection(ui: &mut Ui, p: &Project, actions: &mut Vec<Action>) {
     egui::CollapsingHeader::new(theme::heading(tr("sidebar.selection")))
         .default_open(true)
         .show(ui, |ui| {
             // 选中帧时长采样（selection ⊆ order ⊆ store，采样必非空）
-            let durations: Vec<u32> = p
+            let mut durations = p
                 .selection
                 .iter()
                 .filter_map(|id| p.store.get(*id))
-                .map(|f| f.duration_ms)
-                .collect();
-            let mixed = durations.len() > 1 && durations.iter().any(|&d| d != durations[0]);
+                .map(|f| f.duration_ms);
+            let first = durations.next();
+            let mixed = durations.any(|d| Some(d) != first);
 
             // 选中集或文档变更时重置输入框：混合 → 100，一致 → 该公共时长
             let sig = (p.source.clone(), p.selection.clone());
@@ -126,7 +118,7 @@ fn render_selection(ui: &mut Ui, p: &crate::model::Project, actions: &mut Vec<Ac
                 let init = if mixed {
                     DEFAULT_DURATION_MS
                 } else {
-                    durations.first().copied().unwrap_or(DEFAULT_DURATION_MS)
+                    first.unwrap_or(DEFAULT_DURATION_MS)
                 };
                 ui.memory_mut(|mem| mem.data.insert_temp(Id::new(KEY_DURATION_MS), init));
             }
@@ -177,7 +169,7 @@ fn render_selection(ui: &mut Ui, p: &crate::model::Project, actions: &mut Vec<Ac
 
 // ── 内存 ────────────────────────────────────────────────────────
 
-fn render_memory(ui: &mut Ui, p: &crate::model::Project, textures: &TextureCache) {
+fn render_memory(ui: &mut Ui, p: &Project, textures: &TextureCache) {
     egui::CollapsingHeader::new(theme::heading(tr("sidebar.memory")))
         .default_open(true)
         .show(ui, |ui| {

@@ -1,5 +1,5 @@
-// i18n 集成测试：render 层使用的所有文案键必须在 zh-CN / en 两个 locale
-// 中都能解析（缺键时 rust_i18n::t! 会原样返回 key，用这一点做断言）。
+//! i18n 集成测试：render 层使用的所有文案键必须在 zh-CN / en 两个 locale
+//! 中都能解析（缺键时 rust_i18n::t! 会原样返回 key，用这一点做断言）。
 
 use gifsennin_rust::render::i18n::{tr, tra};
 
@@ -103,7 +103,7 @@ fn assert_all_resolve(locale: &str) {
 fn all_render_keys_resolve_in_both_locales() {
     assert_all_resolve("zh-CN");
     assert_all_resolve("en");
-    rust_i18n::set_locale("zh-CN"); // 还原默认（共识 Q9）
+    rust_i18n::set_locale("zh-CN"); // 还原默认
 }
 
 #[test]

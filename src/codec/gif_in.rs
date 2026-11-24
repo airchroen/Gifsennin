@@ -1,25 +1,14 @@
 //! GIF 解码。
 //!
-//! ## 实现要点（已核实 registry 源码）
-//! - `image::codecs::gif::GifDecoder`（BufReader<File>，64KB 缓冲）的
-//!   `into_frames()` 逐帧增量解码；image crate 内部已做画布合成
-//!   （delta/disposal 处理完毕，`GifFrameIterator` 维护 non_disposed_frame），
-//!   每帧尺寸恒等于画布。
-//! - **逐帧累计内存**：每解码一帧把 `rgba.len()` 累加到 `cum`，
-//!   `cum > MEMORY_BUDGET_BYTES` 立即返回 `AppError::TooLarge` 并丢弃已解码帧
-//!   （共识 Q4 护栏：不许 `collect_frames()` 一把梭）。
-//! - 时长：`frame.delay().numer_denom_ms()` 返回的 (num, den) 已是毫秒分数
-//!   （image 内部 delay 单位 10ms → Ratio(delay*10, 1)），
-//!   `duration_ms = (num / den).round()`。严禁再乘 1000；0 保留 0
-//!   （播放层按 MIN_PLAYBACK_MS 下限处理）。
-//! - loop_count：image crate 不暴露。gif-0.13 的 `Decoder` 在 `read_info`
-//!   阶段即解析 NETSCAPE2.0 块并暴露 `repeat()`（reader/mod.rs `init`：
-//!   HeaderEnd 前的 `Decoded::Repetitions` 事件写入 `self.repeat`），
-//!   故对同一文件再开一个轻量 header 解码器读取。解析失败/不存在 → 0
-//!   （无限循环，浏览器默认行为；`Repeat::default() == Finite(0)` 同样归 0）。
-use super::{DecodedAnimation, DecodedFrame};
+//! - image crate 的 `GifDecoder::into_frames()` 已做画布合成（delta/disposal），
+//!   每帧尺寸恒等于画布；逐帧解码、逐帧累计内存，超预算立即中止。
+//! - `frame.delay().numer_denom_ms()` 已是毫秒分数，`duration_ms = (num / den).round()`，
+//!   不得再乘 1000；0 保留 0（播放层套 MIN_PLAYBACK_MS 下限）。
+//! - image crate 不暴露循环次数；gif crate 的 `Decoder::repeat()` 在读到文件头后
+//!   即可调用，故另开一个轻量解码器读取。
+use super::{decode_err, DecodedAnimation, DecodedFrame};
 use crate::errors::AppError;
-use crate::model::MEMORY_BUDGET_BYTES;
+use crate::model::{check_memory_budget, MEMORY_BUDGET_BYTES};
 use image::AnimationDecoder;
 use image::ImageDecoder;
 use std::io::BufReader;
@@ -35,10 +24,9 @@ pub fn load_gif(path: &Path) -> Result<DecodedAnimation, AppError> {
         image::codecs::gif::GifDecoder::new(buffered).map_err(|e| decode_err(path, &e))?;
     let (width, height) = decoder.dimensions();
 
-    // 审查修复：GifDecoder::new 默认 Limits::no_limits()，帧迭代器会在
-    // 累计护栏生效前先分配整幅画布（40 字节声明 65535² 的恶意 GIF 即可
-    // 触发 ~16GiB 分配直接 abort）。此处把分配上限交给 image crate，
-    // 超限时迭代器返回 LimitError → 走 AppError::Decode 优雅失败。
+    // GifDecoder 默认 Limits::no_limits()：帧迭代器会在累计护栏生效前先分配整幅画布
+    // （40 字节声明 65535² 的恶意 GIF 即可触发 ~16GiB 分配直接 abort）。把分配上限
+    // 交给 image crate，超限时迭代器返回 LimitError。
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(MEMORY_BUDGET_BYTES);
     decoder
@@ -57,12 +45,7 @@ pub fn load_gif(path: &Path) -> Result<DecodedAnimation, AppError> {
         };
         let rgba = frame.into_buffer().into_raw();
         cum += rgba.len() as u64;
-        if cum > MEMORY_BUDGET_BYTES {
-            return Err(AppError::TooLarge {
-                needed: cum,
-                budget: MEMORY_BUDGET_BYTES,
-            });
-        }
+        check_memory_budget(cum)?;
         frames.push(DecodedFrame { rgba, duration_ms });
     }
 
@@ -78,20 +61,13 @@ pub fn load_gif(path: &Path) -> Result<DecodedAnimation, AppError> {
     })
 }
 
-/// 给 Decode 错误补上路径上下文
-fn decode_err(path: &Path, e: impl std::fmt::Display) -> AppError {
-    AppError::Decode(format!("{}: {e}", path.display()))
-}
-
-/// NETSCAPE2.0 循环次数（GIF 语义：0 = 无限）。
-/// gif crate 在 read_info 阶段完成解析；任何失败都兜底为 0。
+/// NETSCAPE2.0 循环次数（GIF 语义：0 = 无限）；任何失败都兜底为 0。
 fn read_loop_count(path: &Path) -> u16 {
     let Ok(file) = std::fs::File::open(path) else {
         return 0;
     };
-    let reader = match gif::Decoder::new(BufReader::new(file)) {
-        Ok(r) => r,
-        Err(_) => return 0,
+    let Ok(reader) = gif::Decoder::new(BufReader::new(file)) else {
+        return 0;
     };
     match reader.repeat() {
         gif::Repeat::Infinite => 0,

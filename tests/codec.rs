@@ -1,6 +1,6 @@
-// codec 层集成测试（共识 Q8）：编码 → 落盘 → 解码往返断言。
-// 覆盖 GIF（量化容差 ±48/通道、时长 centisecond 精确保真）、
-// 动画 WebP（无损像素精确、时间戳时长）、PNG 序列 zip、单帧 PNG。
+//! codec 层集成测试：编码 → 落盘 → 解码往返断言。
+//! 覆盖 GIF（量化容差 ±48/通道、时长 centisecond 精确保真）、
+//! 动画 WebP（无损像素精确、时间戳时长）、PNG 序列 zip、单帧 PNG。
 
 use gifsennin_rust::codec::{
     encode_gif, encode_png, encode_png_zip, encode_webp, load_gif, load_webp,
@@ -43,7 +43,7 @@ impl Drop for TempFile {
 /// 纯色 32×32 帧
 fn solid_frame(rgb: [u8; 3], duration_ms: u32) -> Frame {
     let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
-    for px in rgba.chunks_exact_mut(4) {
+    for px in rgba.as_chunks_mut::<4>().0 {
         px[0] = rgb[0];
         px[1] = rgb[1];
         px[2] = rgb[2];
@@ -88,14 +88,12 @@ fn gif_roundtrip_frames_durations_colors() {
     let frames = three_frames();
 
     // 编码到内存
-    let mut buf = std::io::Cursor::new(Vec::new());
-    let bytes = encode_gif(&frames, 0, GifQuality::Balanced, &mut buf).expect("gif encode");
-    assert!(bytes > 0);
-    assert_eq!(bytes, buf.get_ref().len() as u64);
+    let gif = encode_gif(&frames, 0, GifQuality::Balanced).expect("gif encode");
+    assert!(!gif.is_empty());
 
     // 落盘后走加载路径
     let tmp = TempFile::new("gif", "gif");
-    std::fs::write(tmp.path(), buf.get_ref()).expect("write temp gif");
+    std::fs::write(tmp.path(), &gif).expect("write temp gif");
     let anim = load_gif(tmp.path()).expect("gif decode");
 
     assert_eq!(anim.width, SIZE);
@@ -123,11 +121,10 @@ fn gif_roundtrip_frames_durations_colors() {
 #[test]
 fn gif_loop_count_roundtrip_finite() {
     let frames = three_frames();
-    let mut buf = std::io::Cursor::new(Vec::new());
-    encode_gif(&frames, 2, GifQuality::Fast, &mut buf).expect("gif encode");
+    let gif = encode_gif(&frames, 2, GifQuality::Fast).expect("gif encode");
 
     let tmp = TempFile::new("gif_loop", "gif");
-    std::fs::write(tmp.path(), buf.get_ref()).expect("write temp gif");
+    std::fs::write(tmp.path(), &gif).expect("write temp gif");
     let anim = load_gif(tmp.path()).expect("gif decode");
     assert_eq!(anim.loop_count, 2, "NETSCAPE Finite(2) survives roundtrip");
 }
@@ -139,7 +136,7 @@ fn webp_roundtrip_frames_durations_colors_lossless() {
     let frames = three_frames();
 
     let data = encode_webp(&frames, 0, 80.0, true).expect("webp encode");
-    assert!(data.len() > 0);
+    assert!(!data.is_empty());
 
     let tmp = TempFile::new("webp", "webp");
     std::fs::write(tmp.path(), &data).expect("write temp webp");
@@ -224,8 +221,7 @@ fn png_single_frame_roundtrip() {
 
 #[test]
 fn encoders_reject_empty_input() {
-    let mut buf = std::io::Cursor::new(Vec::new());
-    assert!(encode_gif(&[], 0, GifQuality::Balanced, &mut buf).is_err());
+    assert!(encode_gif(&[], 0, GifQuality::Balanced).is_err());
     assert!(encode_webp(&[], 0, 80.0, false).is_err());
     assert!(encode_png_zip(&[]).is_err());
 }

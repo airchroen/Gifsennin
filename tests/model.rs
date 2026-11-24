@@ -1,5 +1,5 @@
-// model 层集成测试：Action 序列状态断言、undo 快照不变量、GC、播放。
-// 共识 Q5：apply 是纯函数，全部可无头测试。
+//! model 层集成测试：Action 序列状态断言、undo 快照不变量、GC、播放。
+//! apply 是纯函数，全部可无头测试。
 
 use gifsennin_rust::codec::{DecodedAnimation, DecodedFrame};
 use gifsennin_rust::errors::AppError;
@@ -73,7 +73,7 @@ fn empty_animation_rejected() {
     assert!(matches!(result, Err(AppError::Decode(_))));
 }
 
-// ── 选择语义（共识 Q7）────────────────────────────────────────
+// ── 选择语义          ────────────────────────────────────────
 
 #[test]
 fn select_toggle_range_semantics() {
@@ -102,7 +102,7 @@ fn select_toggle_range_semantics() {
     assert_eq!(m.project.as_ref().unwrap().selection.len(), 5);
 }
 
-// ── undo 快照不变量（共识 Q3）─────────────────────────────────
+// ── undo 快照不变量       ─────────────────────────────────
 
 /// 通用不变量：任意编辑 → undo 必须精确恢复该编辑发生前一瞬的完整快照
 fn assert_undo_roundtrip(m: &mut Model, edit: Edit) {
@@ -311,7 +311,7 @@ fn reverse_selected_only_touches_selected_positions() {
     assert_eq!(names, vec![0, 4, 2, 3, 1]);
 }
 
-// ── GC（共识 Q3：帧仓库只增不删 + 引用回收）──────────────────
+// ── GC（帧仓库只增不删 + 引用回收）──────────────────────
 
 #[test]
 fn gc_drops_unreferenced_after_history_trim() {
@@ -431,11 +431,11 @@ fn empty_selection_edits_are_noops_without_history() {
     assert_eq!(m.project.as_ref().unwrap().frame_count(), 3);
 }
 
-// ── 审查修复回归测试 ────────────────────────────────────────────
+// ── 回归测试         ────────────────────────────────────────────
 
 #[test]
 fn redo_restores_multi_level_history() {
-    // 审查缺陷：Redo 复用 push_undo 清空了剩余 redo → 重做深度恒为 1
+    // 回归：Redo 曾复用 push_undo 清空剩余 redo，重做深度恒为 1
     let mut m = loaded(4); // [0 1 2 3]
     m.apply(Action::Edit(Edit::DeleteFrames { ids: ids(&m, &[3]) })); // 3 帧
     m.apply(Action::Edit(Edit::DeleteFrames { ids: ids(&m, &[2]) })); // 2 帧
@@ -453,7 +453,7 @@ fn redo_restores_multi_level_history() {
 
 #[test]
 fn resize_budget_guard_blocks_oversize() {
-    // 审查缺陷：Resize 无预算预检，可 3 击触发上百 GB 分配直接 abort
+    // 回归：Resize 无预算预检时会触发远超预算的分配
     let mut m = loaded(3); // 8×8×3 ≈ 768B
     m.playback.playing = false;
     m.apply(Action::Edit(Edit::Resize {
@@ -482,7 +482,7 @@ fn resize_budget_guard_blocks_oversize() {
 
 #[test]
 fn noop_edits_do_not_create_history() {
-    // 审查缺陷：单帧反转/原尺寸缩放是恒等置换却入历史并清空 redo
+    // 回归：单帧反转/原尺寸缩放是恒等置换，不应入历史并清空 redo
     let mut m = loaded(4);
     m.apply(Action::SelectFrame(ids(&m, &[1])[0])); // 单选
     m.apply(Action::Edit(Edit::ReverseSelected)); // 恒等
@@ -505,7 +505,7 @@ fn noop_edits_do_not_create_history() {
 
 #[test]
 fn loop_toggle_is_undoable_and_marks_dirty() {
-    // 审查缺陷：loop_count 在历史外直接改，被无关撤销静默回滚
+    // 回归：loop_count 在历史外直接改会被无关撤销静默回滚
     let mut m = loaded(3);
     m.apply(Action::SetLoopInfinite(true));
     assert_eq!(m.project.as_ref().unwrap().loop_count, 0);
@@ -526,7 +526,7 @@ fn loop_toggle_is_undoable_and_marks_dirty() {
 
 #[test]
 fn frame_ids_are_globally_unique_across_documents() {
-    // 审查缺陷：FrameId 每仓库从 0 起算 → 跨文档纹理缓存/拖拽状态碰撞
+    // 回归：FrameId 每仓库从 0 起算会让跨文档纹理缓存/拖拽状态碰撞
     let a = Project::from_decoded(PathBuf::from("a.gif"), anim(3, 4, 4, 100)).unwrap();
     let b = Project::from_decoded(PathBuf::from("b.gif"), anim(3, 4, 4, 100)).unwrap();
     let set_a: std::collections::HashSet<_> = a.order.iter().copied().collect();

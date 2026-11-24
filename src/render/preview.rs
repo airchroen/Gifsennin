@@ -5,8 +5,7 @@ use crate::model::{Action, Model};
 use crate::render::crop_overlay::render_crop_overlay;
 use crate::render::i18n::{tr, tra};
 use crate::render::{icons, theme, TextureCache, UiState};
-use eframe::egui;
-use eframe::egui::{pos2, vec2, Align, Color32, Context, Layout, Rect, Rounding, Sense, Ui};
+use eframe::egui::{self, pos2, vec2, Align, Color32, Context, Layout, Rect, Rounding, Sense, Ui};
 
 /// 透明衬底棋盘格边长（px）——两档灰交替（比 BG_BASE 略亮的冷灰，衬托画面）
 const CHECKER_CELL: f32 = 20.0;
@@ -28,7 +27,12 @@ pub fn render_preview(
     let mut actions = Vec::new();
 
     let Some(project) = model.project.as_ref() else {
-        render_empty(ui, "preview.empty_open", "preview.empty_open_hint", icons::glyph::MOVIE);
+        render_empty(
+            ui,
+            "preview.empty_open",
+            "preview.empty_open_hint",
+            icons::glyph::MOVIE,
+        );
         return actions;
     };
 
@@ -55,7 +59,12 @@ pub fn render_preview(
 
     if project.order.is_empty() {
         // 空文档：全部帧被删除（可撤销恢复）
-        render_empty(ui, "preview.empty_doc", "preview.empty_doc_hint", icons::glyph::MOVIE);
+        render_empty(
+            ui,
+            "preview.empty_doc",
+            "preview.empty_doc_hint",
+            icons::glyph::MOVIE,
+        );
         if project.history.can_undo() {
             ui.with_layout(Layout::top_down(Align::Center), |ui| {
                 let tip = format!("{} (Ctrl+Z)", tr("toolbar.undo"));
@@ -130,11 +139,9 @@ pub fn render_preview(
     );
 
     // ── 播放控制条 ──
-    // 布局修复：原 with_main_justify(true) 在水平布局里会把首个控件拉伸到
-    // 全宽、其余控件挤出可视区（egui justify 语义是「占满主轴」，存量 bug）。
-    // 居中方案：量出整行宽度后左侧垫等量空隙（ui.horizontal 会先占满宽，
-    // top_down(Center) 包不住它，只能显式留白）。
-    let playing = model.playback.playing && frame_count > 1;
+    // 居中：ui.horizontal 会占满整行宽，外层的居中布局包不住它，只能先量出
+    // 整行宽度、再在左侧垫等量空隙。
+    let playing = model.is_playing();
     let duration = frame.duration_ms;
     let duration_text = tra("preview.duration", &[("ms", duration.to_string())]);
     ui.add_space(spacing.y);
@@ -146,7 +153,10 @@ pub fn render_preview(
             .fonts(|f| f.layout_delayed_color(duration_text.clone(), font_id, f32::INFINITY))
             .size()
             .x;
-        let est = 3.0 * 32.0 + 5.0 * ui.spacing().item_spacing.x + 1.0 + label_w
+        let est = 3.0 * 32.0
+            + 5.0 * ui.spacing().item_spacing.x
+            + 1.0
+            + label_w
             + if playing { 16.0 } else { 0.0 };
         let slack = ((ui.available_width() - est) / 2.0).max(0.0);
         ui.add_space(slack);
@@ -157,7 +167,7 @@ pub fn render_preview(
         }
         let play_tip = format!("{} (Space)", tr("preview.play"));
         let pause_tip = format!("{} (Space)", tr("preview.pause"));
-        let can_play = frame_count > 1;
+        let can_play = model.can_playback();
         // 播放（可按下）= 靛蓝主按钮；暂停（播放中）= 幽灵
         let play_clicked = if playing {
             theme::icon_button(ui, can_play, icons::glyph::PAUSE, &pause_tip).clicked()
@@ -178,10 +188,8 @@ pub fn render_preview(
                 .color(theme::TEXT_DIM),
         );
         if playing {
-            // 播放中指示：painter 画金色圆点（● 字形默认字体缺失，见缺字警告）
-            let (dot_rect, dot_resp) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-            ui.painter().circle_filled(dot_rect.center(), 3.0, theme::GOLD);
-            dot_resp.on_hover_text(tr("preview.playing"));
+            // 播放中指示：金色圆点
+            theme::playhead_dot(ui, &tr("preview.playing"));
         }
     });
 
@@ -209,6 +217,10 @@ fn render_empty(ui: &mut Ui, title_key: &str, hint_key: &str, icon: char) {
         ui.add_space(12.0);
         ui.label(theme::heading(tr(title_key)));
         ui.add_space(4.0);
-        ui.label(egui::RichText::new(tr(hint_key)).small().color(theme::TEXT_DIM));
+        ui.label(
+            egui::RichText::new(tr(hint_key))
+                .small()
+                .color(theme::TEXT_DIM),
+        );
     });
 }

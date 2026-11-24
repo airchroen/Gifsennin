@@ -2,7 +2,7 @@ use super::frame::Frame;
 use rayon::prelude::*;
 use std::sync::Arc;
 
-/// 缩放重采样滤镜（共识 Q6）：默认 CatmullRom，Nearest 保像素风
+/// 缩放重采样滤镜：默认 CatmullRom，Nearest 保像素风
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResizeFilter {
     Nearest,
@@ -44,7 +44,6 @@ pub fn crop_frame(frame: &Frame, x: u32, y: u32, w: u32, h: u32) -> Frame {
     frame_from_image(cropped, frame.duration_ms)
 }
 
-/// 单帧缩放
 pub fn resize_frame(frame: &Frame, width: u32, height: u32, filter: ResizeFilter) -> Frame {
     let img = frame.to_image();
     let resized = image::imageops::resize(&img, width, height, filter.to_image_filter());
@@ -57,8 +56,7 @@ pub enum RotDir {
     Right,
 }
 
-/// 单帧 90° 旋转（画布 w/h 互换）。
-/// image crate 语义（源码已核实）：rotate90 = 顺时针，rotate270 = 逆时针。
+/// 单帧 90° 旋转（画布 w/h 互换）
 pub fn rotate_frame(frame: &Frame, dir: RotDir) -> Frame {
     let img = frame.to_image();
     let rotated = match dir {
@@ -83,7 +81,7 @@ pub fn flip_frame(frame: &Frame, axis: FlipAxis) -> Frame {
     frame_from_image(flipped, frame.duration_ms)
 }
 
-// ── 全局变换（共识 Q2：一次作用于所有帧，画布统一）─────────────────
+// ── 全局变换（一次作用于所有帧，画布统一）─────────────────────────
 // rayon 并行：帧间无依赖。变换产生全新 Frame（新 id），
 // 由调用方建立 old→new 映射以迁移 selection/anchor。
 
@@ -120,7 +118,7 @@ mod tests {
 
     fn gradient(w: u32, h: u32, tag: u8) -> Frame {
         let mut data = vec![0u8; (w * h * 4) as usize];
-        for (i, px) in data.chunks_exact_mut(4).enumerate() {
+        for (i, px) in data.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             px[0] = (i as u8).wrapping_add(tag);
             px[1] = (i / w as usize) as u8;
             px[2] = tag;
@@ -156,8 +154,8 @@ mod tests {
     fn rotate_right_maps_top_left_correctly() {
         // 3×1 横条 [A B C]（r 通道 0,1,2）。顺时针 90°：
         // 原左上角 A → 新右上角（新宽为 1 即顶部），故新列自上而下仍为 [A B C]。
-        let mut data = vec![0u8; 3 * 1 * 4];
-        for (i, px) in data.chunks_exact_mut(4).enumerate() {
+        let mut data = vec![0u8; 12];
+        for (i, px) in data.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             px[0] = i as u8; // 0,1,2
             px[3] = 255;
         }

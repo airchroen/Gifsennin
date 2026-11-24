@@ -1,9 +1,9 @@
-// 现代轻量风暗色主题（共识：Figma/Linear 参照，仅暗色）。
-// 色板与间距常量集中于此；render 各处的散落色值一律引用这里，
-// 将来扩展亮色主题只需在此并列一套色板 + apply_light。
+//! 现代轻量风暗色主题（参照 Figma/Linear，仅暗色）。
+//! 色板与间距常量集中于此；render 各处的散落色值一律引用这里，
+//! 将来扩展亮色主题只需在此并列一套色板 + apply_light。
 
 use crate::render::icons;
-use eframe::egui::{self, Color32, Context, Response, Stroke, Ui, Vec2};
+use eframe::egui::{self, Color32, Context, Response, RichText, Sense, Stroke, Ui, Vec2};
 
 // ── 色板 ────────────────────────────────────────────────────────
 // 微冷灰三档底（带一丝蓝调，暗色下比纯灰更耐看）+ 靛蓝强调 + 金色播放头。
@@ -18,12 +18,18 @@ pub const BG_SURF: Color32 = Color32::from_rgb(32, 32, 40); // #202028
 pub const BG_HOVER: Color32 = Color32::from_rgb(44, 44, 55); // #2C2C37
 /// 分隔线 / 窗口描边
 pub const BORDER: Color32 = Color32::from_rgb(46, 46, 58); // #2E2E3A
+/// 悬停态描边（卡片 / 控件 hover 时比 BORDER 亮一档）
+pub const BORDER_HOVER: Color32 = Color32::from_rgb(58, 58, 72);
+/// 工具栏分组竖分隔线
+pub const VSEP: Color32 = Color32::from_rgb(62, 62, 76); // #3E3E4C
 
 /// 靛蓝强调（选中 / 激活 / 主按钮）
 pub const ACCENT: Color32 = Color32::from_rgb(110, 121, 239); // #6E79EF
 /// 强调色 hover 亮一档
 pub const ACCENT_SOFT: Color32 = Color32::from_rgb(140, 150, 247); // #8C96F7
-/// 播放头语义色（区别于选中靛蓝，现状语义保留）
+/// 强调色低透明度染底（幽灵按钮按下态 / 文本选区 / 拖拽中卡片）
+pub const ACCENT_DIM: Color32 = Color32::from_rgba_premultiplied(110, 121, 239, 60);
+/// 播放头语义色（与选中用的靛蓝区分）
 pub const GOLD: Color32 = Color32::from_rgb(255, 200, 60);
 
 pub const TEXT: Color32 = Color32::from_rgb(230, 231, 236);
@@ -72,7 +78,7 @@ pub fn apply(ctx: &Context) {
     v.window_stroke = Stroke::new(1.0_f32, BORDER);
     v.window_rounding = egui::Rounding::same(12.0);
     v.menu_rounding = egui::Rounding::same(10.0);
-    v.selection.bg_fill = Color32::from_rgba_premultiplied(110, 121, 239, 60);
+    v.selection.bg_fill = ACCENT_DIM;
     v.selection.stroke = Stroke::new(1.5_f32, ACCENT);
     v.hyperlink_color = ACCENT;
 
@@ -115,83 +121,92 @@ pub fn heading(text: impl Into<String>) -> egui::RichText {
 
 // ── 按钮助手 ────────────────────────────────────────────────────
 
-/// 在局部 Ui 上套用幽灵按钮样式（无底色、悬停浮出、按下靛蓝染底），
-/// 用完恢复——不影响同面板里其他常规控件。
-fn ghost_scope<R>(ui: &mut Ui, f: impl FnOnce(&mut Ui) -> R) -> R {
+/// 交互控件四态样式：[未交互, 悬停, 按下, 打开]
+type WidgetStyles = [egui::style::WidgetVisuals; 4];
+
+/// 临时替换交互控件四态样式，执行 `f` 后恢复——不影响同面板里其他常规控件。
+fn with_widget_styles<R>(ui: &mut Ui, styles: WidgetStyles, f: impl FnOnce(&mut Ui) -> R) -> R {
     let saved = ui.style().clone();
-    {
-        let v = ui.visuals_mut();
-        v.widgets.inactive = wv(Color32::TRANSPARENT, BG_HOVER, TEXT_DIM);
-        v.widgets.hovered = wv(BG_HOVER, BG_HOVER, TEXT);
-        v.widgets.active = wv(
-            Color32::from_rgba_premultiplied(110, 121, 239, 60),
-            ACCENT_SOFT,
-            Color32::WHITE,
-        );
-        v.widgets.open = wv(BG_HOVER, BG_HOVER, TEXT);
-    }
+    let widgets = &mut ui.visuals_mut().widgets;
+    [
+        widgets.inactive,
+        widgets.hovered,
+        widgets.active,
+        widgets.open,
+    ] = styles;
     let r = f(ui);
     ui.set_style(saved);
     r
 }
 
-/// 幽灵图标按钮：无底色 + 悬停浮出，统一 32×30 占位；禁用时也显示 tooltip。
-pub fn icon_button(ui: &mut Ui, enabled: bool, ch: char, tip: &str) -> Response {
-    ghost_scope(ui, |ui| {
-        let mut text = icons::text(ch);
-        if !enabled {
-            text = text.color(TEXT_FAINT); // 幽灵态禁用无底色对比，显式降档
-        }
+/// 幽灵按钮：无底色、悬停浮出、按下靛蓝染底
+fn ghost_styles() -> WidgetStyles {
+    [
+        wv(Color32::TRANSPARENT, BG_HOVER, TEXT_DIM),
+        wv(BG_HOVER, BG_HOVER, TEXT),
+        wv(ACCENT_DIM, ACCENT_SOFT, Color32::WHITE),
+        wv(BG_HOVER, BG_HOVER, TEXT),
+    ]
+}
+
+/// 强调按钮：靛蓝实底 + 白色前景
+fn accent_styles() -> WidgetStyles {
+    [
+        wv(ACCENT, ACCENT_SOFT, Color32::WHITE),
+        wv(ACCENT_SOFT, ACCENT_SOFT, Color32::WHITE),
+        wv(ACCENT_SOFT, ACCENT_SOFT, Color32::WHITE),
+        wv(ACCENT_SOFT, ACCENT_SOFT, Color32::WHITE),
+    ]
+}
+
+/// 图标按钮骨架：统一 32×30 占位，`styles` 只作用于本次调用；禁用时也显示 tooltip。
+fn icon_button_styled(
+    ui: &mut Ui,
+    styles: WidgetStyles,
+    enabled: bool,
+    text: RichText,
+    tip: &str,
+) -> Response {
+    with_widget_styles(ui, styles, |ui| {
         ui.add_enabled(enabled, egui::Button::new(text).min_size(ICON_BTN))
             .on_hover_text(tip)
             .on_disabled_hover_text(tip)
     })
 }
 
-/// 强调图标按钮（播放等主操作）：靛蓝实底 + 白图标。
-pub fn accent_icon_button(ui: &mut Ui, enabled: bool, ch: char, tip: &str) -> Response {
-    let saved = ui.style().clone();
-    {
-        let v = ui.visuals_mut();
-        v.widgets.inactive = wv(ACCENT, ACCENT_SOFT, Color32::WHITE);
-        v.widgets.hovered = wv(ACCENT_SOFT, ACCENT_SOFT, Color32::WHITE);
-        v.widgets.active = wv(ACCENT_SOFT, ACCENT_SOFT, Color32::WHITE);
-        v.widgets.open = wv(ACCENT_SOFT, ACCENT_SOFT, Color32::WHITE);
+/// 幽灵图标按钮：无底色 + 悬停浮出。
+pub fn icon_button(ui: &mut Ui, enabled: bool, ch: char, tip: &str) -> Response {
+    let mut text = icons::text(ch);
+    if !enabled {
+        text = text.color(TEXT_FAINT); // 幽灵态禁用无底色对比，显式降档
     }
+    icon_button_styled(ui, ghost_styles(), enabled, text, tip)
+}
+
+/// 强调图标按钮：靛蓝实底 + 白图标。
+pub fn accent_icon_button(ui: &mut Ui, enabled: bool, ch: char, tip: &str) -> Response {
     let mut text = icons::text(ch);
     if !enabled {
         text = text.color(Color32::from_rgba_premultiplied(255, 255, 255, 140));
     }
-    let resp = ui
-        .add_enabled(enabled, egui::Button::new(text).min_size(ICON_BTN))
-        .on_hover_text(tip)
-        .on_disabled_hover_text(tip);
-    ui.set_style(saved);
-    resp
+    icon_button_styled(ui, accent_styles(), enabled, text, tip)
 }
 
 /// 与 icon_button 同尺寸的空白幽灵按钮（供 painter 叠绘自定义图标）。
 /// 占位字符设为全透明：不依赖字体里的空格字形，也不响应态变色。
 pub fn blank_icon_button(ui: &mut Ui, enabled: bool, tip: &str) -> Response {
-    ghost_scope(ui, |ui| {
-        let text = icons::text(icons::glyph::MORE_VERT).color(Color32::TRANSPARENT);
-        ui.add_enabled(enabled, egui::Button::new(text).min_size(ICON_BTN))
-            .on_hover_text(tip)
-            .on_disabled_hover_text(tip)
-    })
+    let text = icons::text(icons::glyph::MORE_VERT).color(Color32::TRANSPARENT);
+    icon_button_styled(ui, ghost_styles(), enabled, text, tip)
 }
 
 /// 主操作文字按钮（对话框「导出/应用/清空」）：靛蓝实底。
 pub fn accent_button(ui: &mut Ui, label: impl Into<egui::WidgetText>) -> Response {
-    let saved = ui.style().clone();
-    {
-        let v = ui.visuals_mut();
-        v.widgets.inactive = wv(ACCENT, ACCENT_SOFT, Color32::WHITE);
-        v.widgets.hovered = wv(ACCENT_SOFT, ACCENT_SOFT, Color32::WHITE);
-        v.widgets.active = wv(ACCENT_SOFT, ACCENT_SOFT, Color32::WHITE);
-        v.widgets.open = wv(ACCENT_SOFT, ACCENT_SOFT, Color32::WHITE);
-    }
-    let resp = ui.button(label);
-    ui.set_style(saved);
-    resp
+    with_widget_styles(ui, accent_styles(), |ui| ui.button(label))
+}
+
+/// 播放头金色圆点（● 字形默认字体缺失，改用 painter 绘制）
+pub fn playhead_dot(ui: &mut Ui, tip: &str) {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+    ui.painter().circle_filled(rect.center(), 3.0, GOLD);
+    resp.on_hover_text(tip);
 }

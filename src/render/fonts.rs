@@ -1,7 +1,7 @@
-// CJK 字体注册（共识 Q9）：打包 Noto Sans SC 作为回退字体，
-// 追加到 Proportional/Monospace 家族末尾——拉丁字形仍用 egui 默认字体，
-// 中文命中回退，避免全文字形变宽。
-// 另注册 Material Symbols 图标字体（独立家族，见 icons.rs）。
+//! CJK 字体注册：打包 Noto Sans SC 作为回退字体，
+//! 追加到 Proportional/Monospace 家族末尾——拉丁字形仍用 egui 默认字体，
+//! 中文命中回退，避免全文字形变宽。
+//! 另注册 Material Symbols 图标字体（独立家族，见 icons.rs）。
 
 use super::icons;
 use eframe::egui;
@@ -26,10 +26,7 @@ pub fn install(ctx: &egui::Context) {
         "material_symbols".into(),
         egui::FontData::from_static(icons::FONT_BYTES),
     );
-    let icon_family = fonts
-        .families
-        .entry(icons::family())
-        .or_default();
+    let icon_family = fonts.families.entry(icons::family()).or_default();
     icon_family.push("material_symbols".into());
     icon_family.push("Ubuntu-Light".into());
     icon_family.push("noto_sc".into());

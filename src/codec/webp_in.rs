@@ -1,18 +1,11 @@
 //! WebP 解码：动画（AnimDecoder）优先，静态（Decoder）回退。
 //!
-//! ## 已核实的 webp-0.3.0 API（源码 `~/.cargo/registry/src/*/webp-0.3.0/src/`）
-//! - `AnimDecoder::new(&bytes).decode() -> Result<DecodeAnimImage, String>`：
-//!   内部强制 `MODE_RGBA` 输出，且每帧均以画布尺寸物化（`animation_decoder.rs`
-//!   中所有帧共用 `anim_info.canvas_width/height`），不存在子矩形帧；
-//!   `DecodeAnimImage` 没有 `dimensions()` 方法 → 画布尺寸取首帧。
-//! - `AnimFrame`：`get_image() -> &[u8]`、`get_layout() -> PixelLayout::{Rgb, Rgba}`、
-//!   `get_time_ms() -> i32`、`width()/height() -> u32`。
-//! - 静态回退：`webp::Decoder::new(&bytes).decode() -> Option<WebPImage>`，
-//!   `is_alpha()` 区分 Rgba/Rgb 布局，`Deref<Target=[u8]>` 取像素字节。
-//! - 源文件 loop_count 经 `DecodeAnimImage.loop_count`（pub 字段）保留（u16 截断）。
+//! `DecodeAnimImage` 没有 `dimensions()` 方法，画布尺寸取首帧；AnimDecoder 恒返回
+//! 画布尺寸的帧，不存在子矩形帧。
 
-use super::{DecodedAnimation, DecodedFrame};
+use super::{decode_err, DecodedAnimation, DecodedFrame};
 use crate::errors::AppError;
+use crate::model::check_memory_budget;
 use std::path::Path;
 
 /// 单帧 / 零间隔 / 静态 WebP 的兜底帧时长（ms）
@@ -24,9 +17,8 @@ const FALLBACK_DURATION_MS: u32 = 100;
 pub fn load_webp(path: &Path) -> Result<DecodedAnimation, AppError> {
     let bytes = std::fs::read(path)?;
 
-    // 审查修复：AnimDecoder 内部一次性物化全部画布尺寸帧，解码完成前
-    // 无法拦截——先扫描 RIFF 结构（VP8X 画布尺寸 + ANMF 帧数）做预算预检
-    precheck_budget(&bytes).map_err(ctx(path))?;
+    // AnimDecoder 会一次性物化全部画布尺寸帧、中途无法拦截：先扫描 RIFF 结构做预算预检
+    precheck_budget(&bytes)?;
 
     match webp::AnimDecoder::new(&bytes).decode() {
         Ok(anim) if anim.len() > 0 => decode_anim(path, &anim),
@@ -73,19 +65,13 @@ fn precheck_budget(bytes: &[u8]) -> Result<(), AppError> {
     if let Some((w, h)) = canvas {
         let frames = frame_count.max(1);
         let projected = u64::from(w) * u64::from(h) * 4 * frames;
-        if projected > crate::model::MEMORY_BUDGET_BYTES {
-            return Err(AppError::TooLarge {
-                needed: projected,
-                budget: crate::model::MEMORY_BUDGET_BYTES,
-            });
-        }
+        check_memory_budget(projected)?;
     }
     Ok(())
 }
 
 // ─── 动画路径 ───────────────────────────────────────────────────
 
-/// 动画帧 → 解码结果。
 /// webp crate 的 `WebPAnimDecoderGetNext` 返回的是「帧结束时刻」：
 /// `timestamp = prev_timestamp + duration`（anim_decode.c，初值 0），
 /// 故第 i 帧时长 = `t[i] - t[i-1]`（i = 0 时 = `t[0]`）；
@@ -93,43 +79,34 @@ fn precheck_budget(bytes: &[u8]) -> Result<(), AppError> {
 fn decode_anim(path: &Path, anim: &webp::DecodeAnimImage) -> Result<DecodedAnimation, AppError> {
     let frames = anim
         .get_frames(0..anim.len())
-        .ok_or_else(|| AppError::Decode("webp: frame range out of bounds".into()))
-        .map_err(ctx(path))?;
+        .ok_or_else(|| decode_err(path, "webp: frame range out of bounds"))?;
     if frames.is_empty() {
-        return Err(AppError::Decode("webp: no frames decoded".into())).map_err(ctx(path));
+        return Err(decode_err(path, "webp: no frames decoded"));
     }
 
     // 画布尺寸：libwebp 每帧恒为画布尺寸，取首帧即可
     let width = frames[0].width();
     let height = frames[0].height();
     if width == 0 || height == 0 {
-        return Err(AppError::Decode(format!(
-            "webp: invalid canvas {width}x{height}"
-        )))
-        .map_err(ctx(path));
+        return Err(decode_err(
+            path,
+            format!("webp: invalid canvas {width}x{height}"),
+        ));
     }
 
     let mut out: Vec<DecodedFrame> = Vec::with_capacity(frames.len());
     let mut prev_ts: i32 = 0;
-    for f in frames.iter() {
+    for f in &frames {
         let ts = f.get_time_ms();
         let duration_ms = frame_interval(prev_ts, ts);
         prev_ts = ts;
-        let rgba = frame_to_rgba(f, width, height).map_err(ctx(path))?;
+        let rgba = frame_to_rgba(f, width, height).map_err(|e| decode_err(path, e))?;
         out.push(DecodedFrame { rgba, duration_ms });
     }
 
-    // 审查修复：保留源文件循环次数（原恒 0 无限，静默改变播放语义）
+    // 保留源文件循环次数（u16 截断）
     let loop_count = u16::try_from(anim.loop_count).unwrap_or(u16::MAX);
     finish(out, width, height, loop_count)
-}
-
-/// 给 Decode 错误补上路径上下文
-fn ctx(path: &Path) -> impl Fn(AppError) -> AppError + '_ {
-    move |e| match e {
-        AppError::Decode(msg) => AppError::Decode(format!("{msg}: {}", path.display())),
-        other => other,
-    }
 }
 
 /// 相邻结束时刻差 → 帧时长（ms）；差值 <= 0（零时长/乱序）按 100ms 兜底
@@ -143,7 +120,7 @@ fn frame_interval(prev: i32, cur: i32) -> u32 {
 }
 
 /// 帧数据 → 画布大小 RGBA。Rgb 布局扩成 RGBA（alpha=255）；
-/// 帧小于画布时铺透明底、左上覆盖（防御性路径：核实 AnimDecoder 恒返回
+/// 帧小于画布时铺透明底、左上覆盖（防御性路径：AnimDecoder 恒返回
 /// 画布尺寸帧，正常不会走到）。
 fn frame_to_rgba(f: &webp::AnimFrame, canvas_w: u32, canvas_h: u32) -> Result<Vec<u8>, AppError> {
     let (fw, fh) = (f.width(), f.height());
@@ -201,39 +178,32 @@ fn frame_to_rgba(f: &webp::AnimFrame, canvas_w: u32, canvas_h: u32) -> Result<Ve
 
 /// 静态 WebP 单帧解码（时长 100ms）。`anim_err` 附带动画解码失败原因。
 fn decode_static(path: &Path, bytes: &[u8], anim_err: &str) -> Result<DecodedAnimation, AppError> {
-    let img = webp::Decoder::new(bytes).decode().ok_or_else(|| {
-        AppError::Decode(format!(
-            "webp decode failed (anim: {anim_err}): {}",
-            path.display()
-        ))
-    })?;
+    let img = webp::Decoder::new(bytes)
+        .decode()
+        .ok_or_else(|| decode_err(path, format!("webp decode failed (anim: {anim_err})")))?;
     let (width, height) = (img.width(), img.height());
     if width == 0 || height == 0 {
-        return Err(AppError::Decode(format!(
-            "webp: invalid size {width}x{height}: {}",
-            path.display()
-        )));
+        return Err(decode_err(
+            path,
+            format!("webp: invalid size {width}x{height}"),
+        ));
     }
 
+    // 布局决定每像素字节数；缓冲不足以覆盖整幅画布即视为损坏
+    let bytes_per_pixel = if img.is_alpha() { 4 } else { 3 };
+    let expected = width as usize * height as usize * bytes_per_pixel;
+    if img.len() < expected {
+        return Err(decode_err(
+            path,
+            format!(
+                "webp: static buffer {} < expected {expected} bytes",
+                img.len()
+            ),
+        ));
+    }
     let rgba = if img.is_alpha() {
-        let expected = width as usize * height as usize * 4;
-        if img.len() < expected {
-            return Err(AppError::Decode(format!(
-                "webp: static buffer {} < expected {expected} bytes: {}",
-                img.len(),
-                path.display()
-            )));
-        }
         img[..expected].to_vec()
     } else {
-        let expected = width as usize * height as usize * 3;
-        if img.len() < expected {
-            return Err(AppError::Decode(format!(
-                "webp: static buffer {} < expected {expected} bytes: {}",
-                img.len(),
-                path.display()
-            )));
-        }
         // Rgb → Rgba（alpha=255）
         let mut out = vec![255u8; expected / 3 * 4];
         let (dst, _) = out.as_chunks_mut::<4>();
@@ -257,7 +227,7 @@ fn decode_static(path: &Path, bytes: &[u8], anim_err: &str) -> Result<DecodedAni
     )
 }
 
-// ─── 收尾：内存护栏（共识 Q4） ──────────────────────────────────
+// ─── 收尾：内存护栏 ─────────────────────────────────────────────
 
 /// AnimDecoder 一次性物化全部帧，解码完成后立刻求和校验预算。
 fn finish(
@@ -267,13 +237,7 @@ fn finish(
     loop_count: u16,
 ) -> Result<DecodedAnimation, AppError> {
     let total: u64 = frames.iter().map(|f| f.rgba.len() as u64).sum();
-    let budget = crate::model::MEMORY_BUDGET_BYTES;
-    if total > budget {
-        return Err(AppError::TooLarge {
-            needed: total,
-            budget,
-        });
-    }
+    check_memory_budget(total)?;
     Ok(DecodedAnimation {
         width,
         height,

@@ -1,7 +1,6 @@
 use thiserror::Error;
 
-/// 应用级错误。跨线程以结构化形式传递（共识 Q5），
-/// UI 层根据变体选择 i18n 文案展示，不再降级为裸字符串。
+/// 应用级错误：跨线程以结构化形式传递，UI 层按变体选择 i18n 文案。
 #[derive(Debug, Error)]
 pub enum AppError {
     #[error("IO error: {0}")]
@@ -16,7 +15,7 @@ pub enum AppError {
     #[error("encode failed: {0}")]
     Encode(String),
 
-    /// 内存预算护栏（共识 Q4：解码后 RGBA 总量超预算时拒绝加载）
+    /// 请求的内存量超过应用预算
     #[error("needs {needed} bytes, budget is {budget} bytes")]
     TooLarge { needed: u64, budget: u64 },
 

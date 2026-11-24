@@ -6,9 +6,10 @@
 //! 图标化（Material Symbols）：文字进 tooltip；翻转对（水平/垂直）字体缺
 //! 垂直字形，成对 painter 自绘保持视觉一致。
 
-use crate::model::{Action, Edit, Model, StatusEvent};
+use crate::errors::AppError;
+use crate::model::{Action, Edit, Model, Project, StatusEvent};
 use crate::render::i18n::{tr, tra};
-use crate::render::{edit_label_key, icons, theme, UiState};
+use crate::render::{edit_label_key, fmt_bytes, icons, theme, UiState};
 use eframe::egui::{self, Color32, Pos2, Response, Sense, Shape, Stroke, Ui, Vec2};
 
 /// 工具栏分组竖分隔线：默认 separator 的 noninteractive 描边在面板底色上
@@ -19,7 +20,7 @@ fn vsep(ui: &mut Ui) {
     let c = rect.center();
     ui.painter().line_segment(
         [Pos2::new(c.x, rect.top()), Pos2::new(c.x, rect.bottom())],
-        Stroke::new(1.0_f32, Color32::from_rgb(62, 62, 76)), // #3E3E4C
+        Stroke::new(1.0_f32, theme::VSEP),
     );
     ui.add_space(2.0);
 }
@@ -52,20 +53,35 @@ pub fn render_toolbar(ui: &mut Ui, model: &Model, ui_state: &mut UiState) -> Vec
         vsep(ui);
 
         // ── 文件 ──
-        // 忙时禁用打开：防止并发加载绕过单次内存预算（审查修复）
-        if theme::icon_button(ui, !model.busy(), icons::glyph::FOLDER_OPEN, &tr("toolbar.open"))
-            .clicked()
+        // 忙时禁用打开：防止并发加载绕过单次内存预算
+        if theme::icon_button(
+            ui,
+            !model.busy(),
+            icons::glyph::FOLDER_OPEN,
+            &tr("toolbar.open"),
+        )
+        .clicked()
         {
             actions.push(Action::OpenFileDialog);
         }
         // 导出：只开关对话框（视图局部意图），确认后由对话框发 StartExport
-        if theme::icon_button(ui, has_frames, icons::glyph::FILE_EXPORT, &tr("toolbar.export"))
-            .clicked()
+        if theme::icon_button(
+            ui,
+            has_frames,
+            icons::glyph::FILE_EXPORT,
+            &tr("toolbar.export"),
+        )
+        .clicked()
         {
             ui_state.export_open = true;
         }
-        if theme::icon_button(ui, !model.busy(), icons::glyph::DELETE_SWEEP, &tr("toolbar.clear"))
-            .clicked()
+        if theme::icon_button(
+            ui,
+            !model.busy(),
+            icons::glyph::DELETE_SWEEP,
+            &tr("toolbar.clear"),
+        )
+        .clicked()
         {
             actions.push(Action::ClearRequested);
         }
@@ -83,33 +99,34 @@ pub fn render_toolbar(ui: &mut Ui, model: &Model, ui_state: &mut UiState) -> Vec
         vsep(ui);
 
         // ── 帧操作 ──
-        if theme::icon_button(ui, has_selection, icons::glyph::DELETE, &tr("edit.delete"))
-            .clicked()
+        if theme::icon_button(ui, has_selection, icons::glyph::DELETE, &tr("edit.delete")).clicked()
         {
-            let ids = project.map(|p| p.selection_in_order()).unwrap_or_default();
+            let ids = project.map(Project::selection_in_order).unwrap_or_default();
             actions.push(Action::Edit(Edit::DeleteFrames { ids }));
         }
-        if theme::icon_button(ui, has_selection, icons::glyph::SWAP_VERT, &tr("edit.reverse"))
-            .clicked()
+        if theme::icon_button(
+            ui,
+            has_selection,
+            icons::glyph::SWAP_VERT,
+            &tr("edit.reverse"),
+        )
+        .clicked()
         {
             actions.push(Action::Edit(Edit::ReverseSelected));
         }
-        // 旋转/翻转作用于全部帧（共识 Q2 全局语义），只需项目有帧
-        if theme::icon_button(ui, has_frames, icons::glyph::ROTATE_LEFT, &tr("edit.rotl"))
-            .clicked()
-        {
-            actions.push(Action::Edit(Edit::RotateLeft));
+        // 旋转/翻转作用于全部帧，只需项目有帧
+        for (icon, edit) in [
+            (icons::glyph::ROTATE_LEFT, Edit::RotateLeft),
+            (icons::glyph::ROTATE_RIGHT, Edit::RotateRight),
+        ] {
+            if theme::icon_button(ui, has_frames, icon, &tr(edit_label_key(&edit))).clicked() {
+                actions.push(Action::Edit(edit));
+            }
         }
-        if theme::icon_button(ui, has_frames, icons::glyph::ROTATE_RIGHT, &tr("edit.rotr"))
-            .clicked()
-        {
-            actions.push(Action::Edit(Edit::RotateRight));
-        }
-        if flip_button(ui, has_frames, false, &tr("edit.fliph")).clicked() {
-            actions.push(Action::Edit(Edit::FlipH));
-        }
-        if flip_button(ui, has_frames, true, &tr("edit.flipv")).clicked() {
-            actions.push(Action::Edit(Edit::FlipV));
+        for (vertical, edit) in [(false, Edit::FlipH), (true, Edit::FlipV)] {
+            if flip_button(ui, has_frames, vertical, &tr(edit_label_key(&edit))).clicked() {
+                actions.push(Action::Edit(edit));
+            }
         }
         vsep(ui);
 
@@ -145,11 +162,10 @@ pub fn render_toolbar(ui: &mut Ui, model: &Model, ui_state: &mut UiState) -> Vec
             ui.separator();
             ui.label(tr("toolbar.lang"));
             let cur = rust_i18n::locale().to_string();
-            if ui.selectable_label(cur == "zh-CN", "中文").clicked() && cur != "zh-CN" {
-                rust_i18n::set_locale("zh-CN");
-            }
-            if ui.selectable_label(cur == "en", "English").clicked() && cur != "en" {
-                rust_i18n::set_locale("en");
+            for (code, name) in [("zh-CN", "中文"), ("en", "English")] {
+                if ui.selectable_label(cur == code, name).clicked() && cur != code {
+                    rust_i18n::set_locale(code);
+                }
             }
         });
 
@@ -184,51 +200,18 @@ fn flip_button(ui: &mut Ui, enabled: bool, vertical: bool, tip: &str) -> Respons
         theme::TEXT_DIM
     };
     let painter = ui.painter_at(resp.rect);
-    if vertical {
-        // 水平轴线 + 上下三角
-        painter.line_segment(
-            [Pos2::new(c.x - 10.0, c.y), Pos2::new(c.x + 10.0, c.y)],
-            Stroke::new(1.5_f32, col),
-        );
-        painter.add(Shape::convex_polygon(
-            vec![
-                Pos2::new(c.x - 5.0, c.y - 3.0),
-                Pos2::new(c.x + 5.0, c.y - 3.0),
-                Pos2::new(c.x, c.y - 10.0),
-            ],
-            col,
-            Stroke::NONE,
-        ));
-        painter.add(Shape::convex_polygon(
-            vec![
-                Pos2::new(c.x - 5.0, c.y + 3.0),
-                Pos2::new(c.x + 5.0, c.y + 3.0),
-                Pos2::new(c.x, c.y + 10.0),
-            ],
-            col,
-            Stroke::NONE,
-        ));
+    // 轴线沿 `dir`（垂直翻转 = 水平轴线）；三角沿 `normal`（垂直于轴线）背离伸展
+    let (dir, normal) = if vertical {
+        (Vec2::X, Vec2::Y)
     } else {
-        // 垂直轴线 + 左右三角
-        painter.line_segment(
-            [Pos2::new(c.x, c.y - 10.0), Pos2::new(c.x, c.y + 10.0)],
-            Stroke::new(1.5_f32, col),
-        );
+        (Vec2::Y, Vec2::X)
+    };
+    painter.line_segment([c - 10.0 * dir, c + 10.0 * dir], Stroke::new(1.5_f32, col));
+    for side in [-1.0, 1.0] {
+        // 三角：底边平行于轴线（距轴线 3px、半长 5px），顶点背离轴线 10px
+        let base = c + side * 3.0 * normal;
         painter.add(Shape::convex_polygon(
-            vec![
-                Pos2::new(c.x - 3.0, c.y - 5.0),
-                Pos2::new(c.x - 3.0, c.y + 5.0),
-                Pos2::new(c.x - 10.0, c.y),
-            ],
-            col,
-            Stroke::NONE,
-        ));
-        painter.add(Shape::convex_polygon(
-            vec![
-                Pos2::new(c.x + 3.0, c.y - 5.0),
-                Pos2::new(c.x + 3.0, c.y + 5.0),
-                Pos2::new(c.x + 10.0, c.y),
-            ],
+            vec![base - 5.0 * dir, base + 5.0 * dir, c + side * 10.0 * normal],
             col,
             Stroke::NONE,
         ));
@@ -273,31 +256,13 @@ fn status_text(model: &Model) -> (String, Color32) {
         Some(StatusEvent::Error(e)) => {
             let key = e.i18n_key();
             let text = match e {
-                crate::errors::AppError::UnsupportedFormat(ext) => tra(key, &[("0", ext.clone())]),
-                crate::errors::AppError::TooLarge { needed, budget } => {
+                AppError::UnsupportedFormat(ext) => tra(key, &[("0", ext.clone())]),
+                AppError::TooLarge { needed, budget } => {
                     tra(key, &[("0", fmt_bytes(*needed)), ("1", fmt_bytes(*budget))])
                 }
                 other => format!("{}: {other}", tr(key)),
             };
             (text, theme::ERR)
         }
-    }
-}
-
-/// 字节数人性化（B/KB/MB/GB）。修复：原实现选对了单位却打印原始字节数，
-/// 1.25 MB 显示成 1315873.0 MB（存量 bug，状态栏/侧栏由此统一用这一份）
-pub(crate) fn fmt_bytes(b: u64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = 1024.0 * 1024.0;
-    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
-    let b = b as f64;
-    if b >= GB {
-        format!("{:.1} GB", b / GB)
-    } else if b >= MB {
-        format!("{:.1} MB", b / MB)
-    } else if b >= KB {
-        format!("{:.1} KB", b / KB)
-    } else {
-        format!("{b:.0} B")
     }
 }

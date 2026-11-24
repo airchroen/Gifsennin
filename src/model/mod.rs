@@ -1,29 +1,41 @@
-// model 层（共识 Q5）：纯数据 + 纯函数，无 GUI 依赖，可无头测试。
-// 所有状态迁移必须经 `Model::apply(Action) -> Vec<Effect>` 单一入口。
+//! model 层：纯数据 + 纯函数，无 GUI 依赖，可无头测试。
+//! 所有状态迁移必须经 `Model::apply(Action) -> Vec<Effect>` 单一入口。
 
-pub mod actions;
-pub mod frame;
-pub mod frame_store;
-pub mod history;
-pub mod transform;
+mod actions;
+mod frame;
+mod frame_store;
+mod history;
+mod transform;
 
 pub use actions::{Action, Edit, Effect, EstimateState, ExportFormat, ExportOutcome, GifQuality};
 pub use frame::{Frame, FrameId};
 pub use frame_store::FrameStore;
 pub use history::{History, Snapshot, MAX_HISTORY};
-pub use transform::ResizeFilter;
+pub use transform::{clamp_crop, ResizeFilter};
 
 use crate::codec::DecodedAnimation;
 use crate::errors::AppError;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// 内存预算护栏（共识 Q4）：解码后 RGBA 总量超过此值拒绝加载。
+/// 内存预算护栏：帧 RGBA 数据总量超过此值即拒绝加载。
 pub const MEMORY_BUDGET_BYTES: u64 = 1_610_612_736; // 1.5 GiB
 
 /// 播放状态下限：0ms 帧按 16ms 播放（浏览器对 0 延迟 GIF 的常见处理）
 pub const MIN_PLAYBACK_MS: u32 = 16;
+
+/// 内存预算判定：`needed` 超预算即返回 [`AppError::TooLarge`]。
+pub fn check_memory_budget(needed: u64) -> Result<(), AppError> {
+    if needed > MEMORY_BUDGET_BYTES {
+        Err(AppError::TooLarge {
+            needed,
+            budget: MEMORY_BUDGET_BYTES,
+        })
+    } else {
+        Ok(())
+    }
+}
 
 // ─── 播放 ───────────────────────────────────────────────────────
 
@@ -59,7 +71,7 @@ pub enum StatusEvent {
 
 pub struct Project {
     pub source: PathBuf,
-    /// 源文件大小（加载时读一次缓存——审查修复：原先侧栏每帧 fs::metadata）
+    /// 源文件大小；加载时读一次缓存（每帧 fs::metadata 在网络路径上会阻塞渲染线程）
     pub file_size: u64,
     pub canvas: (u32, u32),
     /// GIF 语义：0 = 无限循环
@@ -77,19 +89,13 @@ pub struct Project {
 }
 
 impl Project {
-    /// 由解码结果构建项目。再次校验总内存（GIF 在 codec 层已增量拦截，
-    /// WebP 在此处一次性拦截）。
+    /// 由解码结果构建项目。codec 层各解码器已保证不超预算，此处复核兜底。
     pub fn from_decoded(source: PathBuf, anim: DecodedAnimation) -> Result<Self, AppError> {
         if anim.frames.is_empty() {
             return Err(AppError::Decode("no frames decoded".into()));
         }
         let total: u64 = anim.frames.iter().map(|f| f.rgba.len() as u64).sum();
-        if total > MEMORY_BUDGET_BYTES {
-            return Err(AppError::TooLarge {
-                needed: total,
-                budget: MEMORY_BUDGET_BYTES,
-            });
-        }
+        check_memory_budget(total)?;
         let mut store = FrameStore::new();
         let mut order = Vec::with_capacity(anim.frames.len());
         for f in anim.frames {
@@ -98,7 +104,7 @@ impl Project {
             order.push(store.insert(frame));
         }
         let first = order.first().copied();
-        let file_size = std::fs::metadata(&source).map(|m| m.len()).unwrap_or(0);
+        let file_size = std::fs::metadata(&source).map_or(0, |m| m.len());
         Ok(Self {
             source,
             file_size,
@@ -123,10 +129,33 @@ impl Project {
 
     /// 播放头当前帧
     pub fn current_frame(&self) -> Option<Arc<Frame>> {
-        if self.order.is_empty() {
-            return None;
-        }
-        self.frame_at(self.view_index.min(self.order.len() - 1))
+        self.frame_at(self.view_index.min(self.order.len().saturating_sub(1)))
+    }
+
+    /// 播放头当前帧的有效时长（ms）：过短时长按 MIN_PLAYBACK_MS 下限，无帧时取下限
+    fn playback_duration_ms(&self) -> f64 {
+        let fallback = f64::from(MIN_PLAYBACK_MS);
+        self.current_frame()
+            .map_or(fallback, |f| f64::from(f.duration_ms.max(MIN_PLAYBACK_MS)))
+    }
+
+    pub fn index_of(&self, id: FrameId) -> Option<usize> {
+        self.order.iter().position(|&x| x == id)
+    }
+
+    /// 当前序列的全部帧（与 `order` 一一对应）
+    fn frames(&self) -> Vec<Arc<Frame>> {
+        self.order
+            .iter()
+            .filter_map(|id| self.store.get(*id))
+            .collect()
+    }
+
+    /// 单选 `id` 并把播放头移过去
+    fn select_single(&mut self, id: FrameId) {
+        self.selection = vec![id];
+        self.anchor = Some(id);
+        self.view_index = self.index_of(id).unwrap_or(self.view_index);
     }
 
     pub fn selection_set(&self) -> HashSet<FrameId> {
@@ -178,20 +207,14 @@ impl Project {
         self.anchor = self.anchor.filter(|a| live.contains(a));
     }
 
-    /// 当前序列 + 历史快照引用的全部帧 id（GC 依据）
-    fn referenced_ids(&self) -> HashSet<FrameId> {
-        let mut refs = HashSet::new();
-        self.history.referenced_ids(&self.order, &mut refs);
-        refs
-    }
-
+    /// 回收既不在当前序列、也不被任何历史快照引用的帧
     pub fn gc(&mut self) {
-        let refs = self.referenced_ids();
+        let refs = self.history.referenced_ids(&self.order);
         self.store.retain(&refs);
     }
 
     /// old→new 局部映射迁移 selection/anchor（顺序按映射重建）
-    fn remap_ids(&mut self, map: &std::collections::HashMap<FrameId, FrameId>) {
+    fn remap_ids(&mut self, map: &HashMap<FrameId, FrameId>) {
         if map.is_empty() {
             return;
         }
@@ -203,10 +226,13 @@ impl Project {
         self.anchor = self.anchor.as_ref().map(map_id);
     }
 
-    /// 用全新帧集合替换当前序列（画布变换路径），保持选中/播放头语义
-    fn replace_all_frames(&mut self, new_frames: Vec<Frame>) {
+    /// 对全部帧施加 `transform`，用结果（全新 id）替换当前序列，
+    /// 并把 selection/anchor 迁移到新 id（画布变换路径）
+    fn replace_all_frames(&mut self, transform: impl FnOnce(&[Arc<Frame>]) -> Vec<Frame>) {
+        let frames = self.frames();
+        let new_frames = transform(&frames);
         let old_order = std::mem::take(&mut self.order);
-        let mut map = std::collections::HashMap::with_capacity(old_order.len());
+        let mut map = HashMap::with_capacity(old_order.len());
         let mut new_order = Vec::with_capacity(new_frames.len());
         for (old_id, f) in old_order.into_iter().zip(new_frames) {
             let nid = self.store.insert(f);
@@ -251,8 +277,20 @@ impl Model {
     }
 
     pub fn busy(&self) -> bool {
-        matches!(self.status, Some(StatusEvent::Loading))
-            || matches!(self.status, Some(StatusEvent::Exporting))
+        matches!(
+            self.status,
+            Some(StatusEvent::Loading | StatusEvent::Exporting)
+        )
+    }
+
+    /// 文档有 ≥2 帧才可播放
+    pub fn can_playback(&self) -> bool {
+        self.project.as_ref().is_some_and(|p| p.frame_count() > 1)
+    }
+
+    /// 正在播放：`playing` 置位且文档可播放
+    pub fn is_playing(&self) -> bool {
+        self.playback.playing && self.can_playback()
     }
 
     /// 唯一状态迁移入口。返回需 app 层执行的副作用。
@@ -261,7 +299,7 @@ impl Model {
             // ── 文件 IO ──
             Action::OpenFileDialog => {
                 if self.busy() {
-                    return vec![]; // 加载/导出中禁止并发打开（审查修复）
+                    return vec![];
                 }
                 vec![Effect::SpawnOpenDialog]
             }
@@ -287,7 +325,7 @@ impl Model {
                 self.reset_estimate_keep_generation();
                 self.project = Some(project);
                 self.playback = Playback {
-                    playing: frames > 1, // 加载后自动播放（共识 Q2）
+                    playing: frames > 1, // 加载后自动播放
                     acc_ms: 0.0,
                 };
                 self.status = Some(StatusEvent::Loaded {
@@ -313,16 +351,8 @@ impl Model {
 
             // ── 选择与播放 ──
             Action::SelectFrame(id) => {
-                if let Some(p) = self.project.as_mut() {
-                    if p.order.contains(&id) {
-                        p.selection = vec![id];
-                        p.anchor = Some(id);
-                        p.view_index = p
-                            .order
-                            .iter()
-                            .position(|x| *x == id)
-                            .unwrap_or(p.view_index);
-                    }
+                if let Some(p) = self.project.as_mut().filter(|p| p.order.contains(&id)) {
+                    p.select_single(id);
                 }
                 vec![]
             }
@@ -345,25 +375,15 @@ impl Model {
                     if !p.order.contains(&id) {
                         return vec![];
                     }
+                    // 锚点到该帧的闭区间；无锚点（或锚点已失效）退化为单选
                     let anchor = p.anchor.filter(|a| p.order.contains(a));
-                    match anchor {
-                        None => {
-                            // 无锚点退化为单选
-                            p.selection = vec![id];
-                            p.anchor = Some(id);
-                            p.view_index = p
-                                .order
-                                .iter()
-                                .position(|x| *x == id)
-                                .unwrap_or(p.view_index);
-                        }
-                        Some(anchor) => {
-                            let a = p.order.iter().position(|x| *x == anchor).unwrap_or(0);
-                            let b = p.order.iter().position(|x| *x == id).unwrap_or(a);
-                            let (lo, hi) = (a.min(b), a.max(b));
-                            p.selection = p.order[lo..=hi].to_vec();
-                            p.selection.sort_unstable();
-                        }
+                    let range = anchor.and_then(|a| p.index_of(a)).zip(p.index_of(id));
+                    if let Some((a, b)) = range {
+                        let (lo, hi) = (a.min(b), a.max(b));
+                        p.selection = p.order[lo..=hi].to_vec();
+                        p.selection.sort_unstable();
+                    } else {
+                        p.select_single(id);
                     }
                 }
                 vec![]
@@ -381,18 +401,22 @@ impl Model {
                 vec![]
             }
             Action::PlayPause => {
-                if let Some(p) = self.project.as_ref() {
-                    if p.frame_count() > 1 {
-                        self.playback.playing = !self.playback.playing;
-                        if !self.playback.playing {
-                            self.playback.acc_ms = 0.0;
-                        }
+                if self.can_playback() {
+                    self.playback.playing = !self.playback.playing;
+                    if !self.playback.playing {
+                        self.playback.acc_ms = 0.0;
                     }
                 }
                 vec![]
             }
-            Action::StepForward => self.step(1),
-            Action::StepBack => self.step(-1),
+            Action::StepForward => {
+                self.step(1);
+                vec![]
+            }
+            Action::StepBack => {
+                self.step(-1);
+                vec![]
+            }
 
             // ── 导出 ──
             Action::StartExport(format) => {
@@ -426,8 +450,6 @@ impl Model {
                 if let Some(p) = self.project.as_mut() {
                     if let Some(entry) = p.history.pop_redo() {
                         let before = p.snapshot();
-                        // 审查修复：Redo 压撤销栈时必须保留剩余 redo 分支，
-                        // 否则重做深度恒被截断为 1
                         p.history.push_undo_keep_redo(entry.edit, before);
                         p.restore(entry.state);
                         p.gc();
@@ -463,14 +485,9 @@ impl Model {
                     )));
                     return vec![];
                 }
-                let frames = p
-                    .order
-                    .iter()
-                    .filter_map(|id| p.store.get(*id))
-                    .collect::<Vec<_>>();
                 self.status = Some(StatusEvent::Exporting);
                 vec![Effect::SpawnExport {
-                    frames,
+                    frames: p.frames(),
                     loop_count: p.loop_count,
                     format,
                     path,
@@ -502,15 +519,10 @@ impl Model {
                 if p.order.is_empty() {
                     return vec![];
                 }
-                let frames = p
-                    .order
-                    .iter()
-                    .filter_map(|id| p.store.get(*id))
-                    .collect::<Vec<_>>();
                 self.estimate.in_flight = true;
                 vec![Effect::SpawnEstimate {
                     generation,
-                    frames,
+                    frames: p.frames(),
                     loop_count: p.loop_count,
                     format,
                 }]
@@ -523,8 +535,7 @@ impl Model {
                 vec![]
             }
 
-            // ── 文档属性 ──（审查修复：改为可撤销编辑，原先在历史外
-            // 直接改 loop_count 会被无关撤销静默回滚）
+            // ── 文档属性 ──
             Action::SetLoopInfinite(infinite) => {
                 self.apply_edit(Edit::SetLoop { infinite });
                 vec![]
@@ -542,7 +553,7 @@ impl Model {
 
     /// 帧数不足以播放时停止播放（防止 remaining_ms 恒触发重绘循环）
     fn stop_playback_if_short(&mut self) {
-        if self.project.as_ref().is_none_or(|p| p.frame_count() < 2) {
+        if !self.can_playback() {
             self.playback.playing = false;
         }
     }
@@ -550,57 +561,44 @@ impl Model {
     /// 播放推进（每帧调用，dt 秒）。窗口长时间无 repaint 时 dt 可能很大，
     /// 夹到 1s 防止疯狂追帧。
     pub fn tick_playback(&mut self, dt_secs: f64) {
+        if !self.is_playing() {
+            return;
+        }
         let Some(p) = self.project.as_mut() else {
             return;
         };
-        if !self.playback.playing || p.order.len() <= 1 {
-            return;
-        }
         self.playback.acc_ms += dt_secs.min(1.0) * 1000.0;
-        let mut guard = 0; // 防御性上限
-        loop {
-            guard += 1;
-            if guard > 10_000 {
+        // 防御性上限：单次 tick 至多跨越 10_000 帧
+        for _ in 0..10_000 {
+            let cur_dur = p.playback_duration_ms();
+            if self.playback.acc_ms < cur_dur {
                 break;
             }
-            let cur_dur = p
-                .current_frame()
-                .map(|f| f.duration_ms.max(MIN_PLAYBACK_MS))
-                .unwrap_or(MIN_PLAYBACK_MS) as f64;
-            if self.playback.acc_ms >= cur_dur {
-                self.playback.acc_ms -= cur_dur;
-                p.view_index = (p.view_index + 1) % p.order.len();
-            } else {
-                break;
-            }
+            self.playback.acc_ms -= cur_dur;
+            p.view_index = (p.view_index + 1) % p.order.len();
         }
     }
 
     /// 当前帧剩余播放时间（app 层据此安排 repaint）。
-    /// 单帧/空文档返回 None（审查修复：否则恒 16ms 重绘死循环）
+    /// 未在播放（含单帧/空文档）返回 None（否则会恒触发 16ms 重绘）
     pub fn playback_remaining_ms(&self) -> Option<f64> {
-        let p = self.project.as_ref()?;
-        if !self.playback.playing || p.order.len() <= 1 {
+        if !self.is_playing() {
             return None;
         }
-        let cur_dur = p
-            .current_frame()
-            .map(|f| f.duration_ms.max(MIN_PLAYBACK_MS))
-            .unwrap_or(MIN_PLAYBACK_MS) as f64;
+        let cur_dur = self.project.as_ref()?.playback_duration_ms();
         Some((cur_dur - self.playback.acc_ms).max(1.0))
     }
 
-    fn step(&mut self, dir: i32) -> Vec<Effect> {
+    fn step(&mut self, dir: i32) {
         if let Some(p) = self.project.as_mut() {
             if p.order.is_empty() {
-                return vec![];
+                return;
             }
-            self.playback.playing = false; // 步进即暂停
+            self.playback.playing = false;
             let len = p.order.len() as i32;
             let next = (p.view_index as i32 + dir).rem_euclid(len) as usize;
             p.view_index = next;
         }
-        vec![]
     }
 
     fn default_export_name(&self, format: &ExportFormat) -> String {
@@ -617,8 +615,7 @@ impl Model {
         format!("{stem}_{ts}.{}", format.extension())
     }
 
-    /// 编辑命令：压快照 → 变更 → 夹取索引 → GC。
-    /// 注意：按引用匹配 `&edit`，末尾 `push_undo(edit)` 需要 edit 完整。
+    /// 按引用匹配 `&edit`：末尾 `push_undo(edit)` 需要 edit 完整。
     fn apply_edit(&mut self, edit: Edit) {
         let Some(p) = self.project.as_mut() else {
             return;
@@ -664,9 +661,7 @@ impl Model {
                 let mset: HashSet<FrameId> = moved.iter().copied().collect();
                 let target: Option<FrameId> = *target;
                 // 目标插入位置（基于原 order 计算，再扣除被移动元素的影响）
-                let insert_at = target
-                    .and_then(|b| p.order.iter().position(|id| *id == b))
-                    .unwrap_or(p.order.len());
+                let insert_at = target.and_then(|b| p.index_of(b)).unwrap_or(p.order.len());
                 let before_moved = p
                     .order
                     .iter()
@@ -674,18 +669,15 @@ impl Model {
                     .filter(|id| mset.contains(id))
                     .count();
                 let insert_at = insert_at.saturating_sub(before_moved);
-                let mut moved_seq: Vec<FrameId> = p
+                let moved_seq: Vec<FrameId> = p
                     .order
                     .iter()
                     .copied()
                     .filter(|id| mset.contains(id))
                     .collect();
-                moved_seq.reverse(); // 稍后逐个 insert 到同一位保持顺序
                 p.order.retain(|id| !mset.contains(id));
                 let insert_at = insert_at.min(p.order.len());
-                for id in moved_seq {
-                    p.order.insert(insert_at, id);
-                }
+                p.order.splice(insert_at..insert_at, moved_seq);
             }
             Edit::SetDuration { ids, ms } => {
                 if ids.is_empty() {
@@ -693,7 +685,7 @@ impl Model {
                 }
                 let ms = *ms;
                 let set: HashSet<FrameId> = ids.iter().copied().collect();
-                let mut map = std::collections::HashMap::new();
+                let mut map = HashMap::new();
                 let mut new_order = Vec::with_capacity(p.order.len());
                 for id in p.order.iter().copied() {
                     if set.contains(&id) {
@@ -715,14 +707,8 @@ impl Model {
                 if (x, y, w, h) == (0, 0, p.canvas.0, p.canvas.1) {
                     return;
                 }
-                let frames = p
-                    .order
-                    .iter()
-                    .filter_map(|id| p.store.get(*id))
-                    .collect::<Vec<_>>();
-                let new_frames = transform::crop_all(&frames, x, y, w, h);
                 p.canvas = (w, h);
-                p.replace_all_frames(new_frames);
+                p.replace_all_frames(|frames| transform::crop_all(frames, x, y, w, h));
             }
             Edit::Resize {
                 width,
@@ -737,24 +723,15 @@ impl Model {
                 if (width, height) == p.canvas {
                     return;
                 }
-                // 审查修复：内存预算前置检查——对话框允许 1..=10000，
-                // 300 帧 × 大画布会在 rayon 里申请远超预算的内存直接 abort
+                // 预算前置检查：对话框允许到 10000×10000，多帧大画布会在 rayon 里
+                // 申请远超预算的内存
                 let projected = p.order.len() as u64 * u64::from(width) * u64::from(height) * 4;
-                if projected > MEMORY_BUDGET_BYTES {
-                    self.status = Some(StatusEvent::Error(AppError::TooLarge {
-                        needed: projected,
-                        budget: MEMORY_BUDGET_BYTES,
-                    }));
+                if let Err(e) = check_memory_budget(projected) {
+                    self.status = Some(StatusEvent::Error(e));
                     return;
                 }
-                let frames = p
-                    .order
-                    .iter()
-                    .filter_map(|id| p.store.get(*id))
-                    .collect::<Vec<_>>();
-                let new_frames = transform::resize_all(&frames, width, height, filter);
                 p.canvas = (width, height);
-                p.replace_all_frames(new_frames);
+                p.replace_all_frames(|frames| transform::resize_all(frames, width, height, filter));
             }
             Edit::SetLoop { infinite } => {
                 p.loop_count = if *infinite { 0 } else { 1 };
@@ -765,14 +742,8 @@ impl Model {
                     Edit::RotateRight => transform::RotDir::Right,
                     _ => unreachable!("matched arm guarantees variant"),
                 };
-                let frames = p
-                    .order
-                    .iter()
-                    .filter_map(|id| p.store.get(*id))
-                    .collect::<Vec<_>>();
-                let new_frames = transform::rotate_all(&frames, dir);
                 p.canvas = (p.canvas.1, p.canvas.0);
-                p.replace_all_frames(new_frames);
+                p.replace_all_frames(|frames| transform::rotate_all(frames, dir));
             }
             Edit::FlipH | Edit::FlipV => {
                 let axis = match edit {
@@ -780,13 +751,7 @@ impl Model {
                     Edit::FlipV => transform::FlipAxis::Vertical,
                     _ => unreachable!("matched arm guarantees variant"),
                 };
-                let frames = p
-                    .order
-                    .iter()
-                    .filter_map(|id| p.store.get(*id))
-                    .collect::<Vec<_>>();
-                let new_frames = transform::flip_all(&frames, axis);
-                p.replace_all_frames(new_frames);
+                p.replace_all_frames(|frames| transform::flip_all(frames, axis));
             }
         }
 
